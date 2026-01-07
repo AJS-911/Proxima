@@ -1533,4 +1533,58 @@ This document provides a comprehensive blueprint for building Proxima. Each phas
 
 ---
 
+## Appendix: Documentation Standards
+
+### Part 1: Markdown Formatting Guidelines
+
+**User Instructions Take Precedence:** If the user provides specific instructions about the desired output format, these instructions should always take precedence over the default formatting guidelines outlined below.
+
+**Heading Structure:**
+
+- **Main Title (#):** Use once at the top for the document's primary title
+- **Primary Subheadings (##):** Use multiple times for main sections
+
+**Paragraph Guidelines:**
+
+- Keep paragraphs short (3-5 sentences) to avoid dense text blocks
+- Ensure logical flow between sections
+
+**List Formatting:**
+
+- Use `-` or `*` for unordered lists
+- Use numbers (`1.`, `2.`) for ordered lists
+- Combine bullet points or numbered lists for steps, key takeaways, or grouped ideas
+
+**Key Principle:** Ensure headings and lists flow logically, making it easy for readers to scan and understand key points quickly. The readability and format of the output is very important.
+
+---
+
+### Part 2: Citation Guidelines
+
+**Citation Format Preservation:**
+
+- **IMPORTANT:** Preserve any and all citations following the `【{cursor}†L{line_start}(-L{line_end})?】` format
+
+**Image Embedding Rules:**
+
+1. If embedding images with `【{cursor}†embed_image】`, ALWAYS cite them at the **BEGINNING of paragraphs**
+2. Do NOT mention the sources of the embed_image citation (they are automatically displayed in the UI)
+3. Do NOT use embed_image citations in front of headers
+4. ONLY embed images at paragraphs containing three to five sentences minimum
+
+**Image Search Policy:**
+
+- **No proactive image searching:** Do not specifically search for images to embed
+- If images are encountered while researching the main issue, they may be considered
+- Do not go out of the way to find images to embed
+- Lower resolution images are acceptable; no need to seek higher resolution versions
+
+**Image Citation Restrictions:**
+
+- ONLY embed images that have been actually clicked into/opened
+- Do NOT cite the same image more than once
+- If an unsupported content type error message appears for an image, embedding will NOT work—skip it
+
+---
+
 _Document generated for the Proxima AI Agent project. This is a living document—update as the project evolves._
