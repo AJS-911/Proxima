@@ -1587,4 +1587,1510 @@ This document provides a comprehensive blueprint for building Proxima. Each phas
 
 ---
 
+### Part 3: Comprehensiveness Guidelines
+
+**Core Principle:** Responses MUST be extremely comprehensive. This means providing fully detailed, complete, deep, and accurate explanations for user queries.
+
+**Depth Requirements:**
+
+- Do not settle for surface-level summaries or high-level overviews
+- Dive into technical, procedural, contextual, and conceptual depths of the topic
+- Responses should leave no significant gaps or unanswered questions
+
+**Content Inclusion:**
+
+- Include background information, definitions, or contextual clarifications when needed to ensure clarity or completeness
+- Only omit such information if explicitly told not to include it
+- Always lean toward thoroughness over brevity, especially when the user expresses interest in a complete understanding
+
+**Contextual Additions:**
+
+- Relevant background introduction or context may be included
+- Ensure any additions do not conflict with user instructions
+- Prioritize user-specified requirements over default comprehensiveness when conflicts arise
+
+**Quality Standards:**
+
+1. **Accuracy:** All information must be verified and correct
+2. **Completeness:** Cover all relevant aspects of the topic
+3. **Clarity:** Ensure explanations are understandable at the appropriate level
+4. **Relevance:** Stay focused on the user's query while providing necessary context
+5. **Depth:** Go beyond surface-level explanations to provide true understanding
+
+---
+
+### Part 4: Stay Updated Guidelines
+
+**Core Principle:** Internal knowledge may be outdated. DO NOT rely solely on training data or memorized information.
+
+**Research Requirements:**
+
+- Use searches to gather the latest insights before diving deeper into any topic
+- Understand the current state of research and developments
+- Verify information against up-to-date sources when possible
+
+**Outdated Information Warning Signs:**
+
+- If a user asks for a recent update but the answer only contains facts known before 2024, the response is on the wrong track
+- Current year context: It is now 2026—ensure information reflects this timeframe
+- Be especially cautious with rapidly evolving fields (technology, frameworks, APIs, regulations)
+
+**Best Practices:**
+
+1. **Verify Currency:** Check if the topic has had recent developments or changes
+2. **Search First:** When in doubt, search for recent information before answering
+3. **Acknowledge Limitations:** If unable to verify current information, clearly state this
+4. **Prioritize Recency:** For time-sensitive topics, recent sources take precedence over older ones
+5. **Cross-Reference:** Use multiple sources to confirm current state of information
+
+**Domains Requiring Extra Vigilance:**
+
+- Software versions and API changes
+- Library and framework updates
+- Security vulnerabilities and patches
+- Regulatory and compliance changes
+- Market conditions and industry trends
+- Research breakthroughs and discoveries
+
+---
+
+### Part 5: Connected Source Citations
+
+**Core Principle:** It is critical to cite connected sources in responses when they have been used. Users need to know where information came from.
+
+**Citation Requirements:**
+
+- **MUST cite actual page opens as sources**
+- The cursor format `【{cursor}†L{line_start}(-L{line_end})?】` MUST correspond with a tether_id from a `browse.open` call
+- Such `browse.open` call CANNOT be a search result
+
+**Prohibited Citation Types:**
+
+- **CANNOT cite Search results for query (`browse.search`) results as a source**
+- Search results will not be properly displayed to the user
+- Only cite sources that have been actually opened and read
+
+**Handling Missing Information:**
+
+- If the information the user is asking for is NOT found in the connected sources:
+  - State clearly in the report that the information was not found in the connected sources
+  - Do not fabricate or assume information that wasn't in the sources
+
+**Error Handling:**
+
+- If errors were encountered while searching over the sources:
+  - State that clearly in the report
+  - Explain what sources were successfully accessed vs. which failed
+  - Provide whatever information was gathered from successful sources
+
+**Best Practices:**
+
+1. **Traceability:** Every factual claim should be traceable to a cited source
+2. **Accuracy:** Ensure citations point to the correct line ranges
+3. **Transparency:** Be upfront about source limitations or access issues
+4. **Completeness:** Cite all sources that contributed to the response
+5. **Honesty:** Never cite sources that weren't actually accessed
+
+---
+
+### Part 6: Deep Research Task Constraints
+
+**IMPORTANT: These constraints are non-negotiable for deep research tasks.**
+
+**Code & File Modification Prohibitions:**
+
+- **Do NOT make any changes to any existing code or files**
+- No refactoring
+- No edits
+- No silent assumptions
+
+**Code Implementation Prohibitions:**
+
+- **Do NOT provide any actual code implementations**
+- Absolutely no code snippets
+- Absolutely no pseudo-code
+- Absolutely no implementation code
+
+**What IS Allowed:**
+
+- Reference libraries, frameworks, tools, or technologies by name
+- Describe logic, architecture, flows, and mechanisms
+- Explain conceptual approaches and methodologies
+- Discuss design patterns and architectural decisions
+- Compare different approaches or technologies
+- Provide high-level system design descriptions
+
+**Rationale:**
+
+These constraints ensure that deep research tasks remain focused on:
+
+1. **Analysis:** Understanding existing systems and approaches
+2. **Architecture:** Designing solutions at a conceptual level
+3. **Planning:** Creating detailed implementation roadmaps
+4. **Education:** Explaining concepts without implementation details
+5. **Documentation:** Producing comprehensive design documents
+
+**Enforcement:**
+
+- Any violation of these constraints invalidates the research output
+- If implementation details are needed, they must be explicitly requested in a separate task
+- Maintain strict separation between research/design and implementation phases
+
+---
+
+### Part 7: Original Task Specification
+
+**Task Overview:**
+
+Create a strategic, step-by-step, deeply detailed guide on how to design and build an entire AI agent—from scratch—similar in power, philosophy, and capability to:
+
+**Inspiration Sources:**
+
+| Project                   | Description                                                     | Repository                                                      |
+| ------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------- |
+| **OpenCode AI**           | Intelligent code assistance patterns and agent-driven workflows | [opencode-ai/opencode](https://github.com/opencode-ai/opencode) |
+| **Crush (Charmbracelet)** | Elegant terminal UI paradigms and user experience design        | [charmbracelet/crush](https://github.com/charmbracelet/crush)   |
+
+**Agent Identity:**
+
+- **Name:** Proxima
+- **Purpose:** Orchestrate quantum simulations across multiple backends
+- **Philosophy:** Independent, extensible system with its own identity
+
+**Target Quantum Backends:**
+
+| Backend        | Simulator Types                                                | Repository                                                                             |
+| -------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| **LRET**       | Framework Integration                                          | [kunal5556/LRET](https://github.com/kunal5556/LRET/tree/feature/framework-integration) |
+| **Cirq**       | Density Matrix Simulator, State Vector Simulator               | [quantumlib/Cirq](https://github.com/quantumlib/Cirq)                                  |
+| **Qiskit Aer** | Density Matrix Simulator, State Vector Simulator               | [Qiskit/qiskit-aer](https://github.com/Qiskit/qiskit-aer)                              |
+| **Extensible** | Additional quantum or classical backends as extensible targets | —                                                                                      |
+
+**Core Capability:**
+
+Proxima should allow users to seamlessly select, compare, analyze, and interpret results from these backends within a single intelligent agent workflow.
+
+**Design Principle:**
+
+- Take architectural, UX, and feature inspiration from OpenCode AI and Crush
+- Proxima must be designed as its own independent, extensible system
+- NOT a copy—original implementation with inspired patterns
+
+**Guide Requirements:**
+
+1. Strategic system architecture overview
+2. Phased development roadmap
+3. Step-by-step implementation guidance (descriptions only, no code)
+4. Reference to specific libraries, frameworks, and tools
+5. Detailed enough for advanced AI models to follow and implement
+
+---
+
+### Part 8: Reference Projects
+
+**Primary Inspiration Sources:**
+
+These projects serve as architectural and UX inspiration for Proxima. Study their patterns, philosophies, and implementations to inform design decisions.
+
+**OpenCode AI**
+
+- **Repository:** [https://github.com/opencode-ai/opencode](https://github.com/opencode-ai/opencode)
+- **Value:** Intelligent code assistance patterns, agent-driven workflows, modular architecture
+- **Key Patterns to Study:**
+  - Agent orchestration mechanisms
+  - Tool integration patterns
+  - Context management strategies
+  - User interaction flows
+
+**Crush (Charmbracelet)**
+
+- **Repository:** [https://github.com/charmbracelet/crush](https://github.com/charmbracelet/crush)
+- **Value:** Elegant terminal UI paradigms, exceptional user experience design
+- **Key Patterns to Study:**
+  - Terminal UI/TUI design patterns (via Bubble Tea)
+  - Progress visualization techniques
+  - Interactive command interfaces
+  - Clean output formatting
+
+---
+
+### Part 9: Agent Identity
+
+**Agent Name:** Proxima
+
+**Identity Characteristics:**
+
+- **Independent:** Not a fork or derivative—built from scratch
+- **Extensible:** Designed for future growth and plugin support
+- **Intelligent:** Capable of autonomous decision-making within defined parameters
+- **Transparent:** Always shows what it's doing and why
+- **User-Centric:** Prioritizes user consent and clear communication
+
+**Naming Rationale:**
+
+- "Proxima" suggests proximity—being close to the user's needs
+- Evokes Proxima Centauri—reaching toward new frontiers (quantum computing)
+- Short, memorable, and distinctive
+
+---
+
+### Part 10: Primary Goal Definition
+
+**GOAL:** Proxima must be capable of running quantum simulations across multiple backends.
+
+**Supported Backends (Minimum Viable):**
+
+**1. LRET (Framework Integration Branch)**
+
+- **Repository:** [https://github.com/kunal5556/LRET/tree/feature/framework-integration](https://github.com/kunal5556/LRET/tree/feature/framework-integration)
+- **Branch:** `feature/framework-integration`
+- **Purpose:** Custom framework integration for specialized quantum workflows
+- **Integration Priority:** High (primary custom backend)
+
+**2. Cirq (Google Quantum AI)**
+
+- **Repository:** [https://github.com/quantumlib/Cirq](https://github.com/quantumlib/Cirq)
+- **Simulator Types:**
+  - Density Matrix Simulator
+  - State Vector Simulator
+- **Integration Priority:** High (industry-standard framework)
+
+**3. Qiskit Aer (IBM Quantum)**
+
+- **Repository:** [https://github.com/Qiskit/qiskit-aer](https://github.com/Qiskit/qiskit-aer)
+- **Simulator Types:**
+  - Density Matrix Simulator
+  - State Vector Simulator
+- **Integration Priority:** High (industry-standard framework)
+
+**4. Extensible Targets**
+
+- Additional quantum backends (future)
+- Classical simulation backends (future)
+- Hybrid quantum-classical backends (future)
+- Plugin architecture for third-party backends
+
+**Multi-Backend Workflow:**
+
+Proxima enables users to:
+
+1. **Select:** Choose specific backend(s) for execution
+2. **Compare:** Run identical simulations across multiple backends
+3. **Analyze:** Examine differences in results, performance, and behavior
+4. **Interpret:** Generate meaningful insights from raw simulation outputs
+
+---
+
+### Part 11: Cirq Backend Deep Dive
+
+**Repository:** [https://github.com/quantumlib/Cirq](https://github.com/quantumlib/Cirq)
+
+**Overview:**
+
+Cirq is a Python framework for creating, editing, and invoking Noisy Intermediate Scale Quantum (NISQ) circuits developed by Google Quantum AI.
+
+**Simulator Types for Proxima Integration:**
+
+**1. Density Matrix Simulator**
+
+- **Purpose:** Simulates quantum circuits using density matrix representation
+- **Use Cases:**
+  - Mixed state simulations
+  - Noise modeling and analysis
+  - Open quantum system dynamics
+  - Decoherence studies
+- **Advantages:**
+  - Accurate representation of noisy quantum systems
+  - Can model partial trace operations
+  - Suitable for realistic hardware simulation
+- **Limitations:**
+  - Memory scales as $O(4^n)$ for $n$ qubits
+  - Slower than state vector for pure states
+
+**2. State Vector Simulator**
+
+- **Purpose:** Simulates quantum circuits using pure state vector representation
+- **Use Cases:**
+  - Ideal (noiseless) circuit simulation
+  - Algorithm development and testing
+  - Educational purposes
+  - Benchmarking
+- **Advantages:**
+  - Memory scales as $O(2^n)$ for $n$ qubits
+  - Faster execution for pure state evolution
+  - Simpler output interpretation
+- **Limitations:**
+  - Cannot directly model mixed states or noise
+  - Limited to pure quantum states
+
+**Cirq Integration Considerations:**
+
+- Native Python library—direct import capability
+- Rich gate library and circuit manipulation tools
+- Built-in visualization capabilities
+- Supports custom gate definitions
+- Integration with Google's quantum hardware
+
+---
+
+### Part 12: Qiskit Aer Backend Deep Dive
+
+**Repository:** [https://github.com/Qiskit/qiskit-aer](https://github.com/Qiskit/qiskit-aer)
+
+**Overview:**
+
+Qiskit Aer is a high-performance quantum circuit simulator framework developed by IBM Quantum, providing various simulation methods for quantum circuits.
+
+**Simulator Types for Proxima Integration:**
+
+**1. Density Matrix Simulator**
+
+- **Purpose:** Full density matrix simulation for mixed quantum states
+- **Use Cases:**
+  - Noise simulation with realistic error models
+  - Quantum channel analysis
+  - Quantum error correction studies
+  - Open system dynamics
+- **Advantages:**
+  - Comprehensive noise model support
+  - Integration with IBM Quantum hardware noise models
+  - Supports all Qiskit noise primitives
+- **Limitations:**
+  - Memory intensive: $O(4^n)$ scaling
+  - Computationally expensive for large circuits
+
+**2. State Vector Simulator**
+
+- **Purpose:** Ideal state vector simulation for pure quantum states
+- **Use Cases:**
+  - Algorithm prototyping
+  - Exact amplitude computation
+  - Verification of quantum algorithms
+  - Large-scale noiseless simulation
+- **Advantages:**
+  - Highly optimized C++ backend
+  - GPU acceleration support
+  - Memory efficient: $O(2^n)$ scaling
+  - Fast execution
+- **Limitations:**
+  - No native noise support (pure states only)
+  - Requires additional configuration for noise injection
+
+**Qiskit Aer Integration Considerations:**
+
+- High-performance C++ core with Python bindings
+- GPU acceleration via CUDA (optional)
+- Extensive noise modeling library
+- Direct integration with IBM Quantum Experience
+- Supports OpenQASM circuit format
+- Rich transpilation and optimization pipelines
+
+---
+
+### Part 13: Extensible Backend Architecture
+
+**Purpose:** Enable Proxima to support additional quantum or classical backends beyond the core three (LRET, Cirq, Qiskit Aer).
+
+**Extensibility Goals:**
+
+1. **Future Quantum Backends:**
+
+   - PennyLane (Xanadu)
+   - Amazon Braket SDK
+   - Azure Quantum SDK
+   - Rigetti Forest/pyQuil
+   - IonQ native SDK
+   - Strangeworks
+   - ProjectQ
+
+2. **Classical Simulation Backends:**
+
+   - QuTiP (Quantum Toolbox in Python)
+   - TensorNetwork (Google)
+   - ITensor
+   - Custom matrix operation libraries
+
+3. **Hybrid Quantum-Classical Backends:**
+   - Variational algorithm executors
+   - Quantum machine learning frameworks
+   - Quantum-inspired classical algorithms
+
+**Plugin Architecture Design:**
+
+**Backend Interface Contract:**
+
+Every backend adapter must implement:
+
+- **Initialize:** Set up backend connection and configuration
+- **Validate Circuit:** Check circuit compatibility with backend
+- **Execute:** Run the quantum circuit/simulation
+- **Retrieve Results:** Get and format execution results
+- **Capabilities Query:** Report supported features and limitations
+- **Resource Estimation:** Estimate memory, time, and compute requirements
+
+**Registration Mechanism:**
+
+- Plugin discovery via entry points or configuration files
+- Runtime backend loading without core code changes
+- Version compatibility checking
+- Graceful degradation for unavailable backends
+
+**Adapter Pattern:**
+
+Each backend adapter translates between:
+
+- Proxima's internal circuit representation
+- Backend-specific circuit format
+- Standardized result format for comparison
+
+**Benefits of Extensibility:**
+
+1. **Future-Proofing:** New backends can be added without core rewrites
+2. **Community Contributions:** Third-party developers can create adapters
+3. **Specialization:** Users can add domain-specific backends
+4. **Hardware Evolution:** Easily integrate new quantum hardware as it becomes available
+5. **Comparison Studies:** Run identical experiments across many backends
+
+---
+
+### Part 14: Unified Agent Workflow
+
+**Core Capability Statement:**
+
+Proxima should allow users to seamlessly select, compare, analyze, and interpret results from these backends within a single intelligent agent workflow.
+
+**Workflow Components:**
+
+**1. Seamless Selection**
+
+- Users can choose one or multiple backends for execution
+- Backend selection can be explicit (user-specified) or automatic (agent-recommended)
+- No context switching required between different backend interfaces
+- Unified command syntax regardless of target backend
+
+**2. Comparison Capabilities**
+
+- Execute identical quantum circuits across multiple backends simultaneously
+- Side-by-side result visualization
+- Automated difference detection and highlighting
+- Performance metrics comparison (execution time, resource usage)
+
+**3. Analysis Features**
+
+- Statistical analysis of result distributions
+- Fidelity calculations between backend outputs
+- Error analysis and noise characterization
+- Trend identification across multiple runs
+
+**4. Interpretation Layer**
+
+- Transform raw quantum data into actionable insights
+- Natural language explanations of results
+- Visualization generation (histograms, Bloch spheres, density matrices)
+- Recommendation engine for next steps
+
+**Single Workflow Benefits:**
+
+- Eliminates need to learn multiple CLI/API interfaces
+- Consistent experience regardless of backend
+- Reduced cognitive load for users
+- Streamlined research and development cycles
+
+---
+
+### Part 15: Inspiration Philosophy
+
+**INSPIRATION (NOT COPYING)**
+
+**Guiding Principle:**
+
+You may take architectural, UX, and feature inspiration from OpenCode AI and Crush, but Proxima must be designed as its own independent, extensible system.
+
+**What to Learn From OpenCode AI:**
+
+- Agent orchestration patterns
+- Context management strategies
+- Tool integration approaches
+- Conversation flow design
+- Error handling paradigms
+
+**What to Learn From Crush (Charmbracelet):**
+
+- Terminal UI excellence
+- Progress visualization
+- Interactive prompts
+- Clean output formatting
+- User feedback mechanisms
+
+**What Makes Proxima Unique:**
+
+1. **Domain Focus:** Quantum simulation orchestration (not general code assistance)
+2. **Multi-Backend Architecture:** First-class support for backend comparison
+3. **Scientific Workflow:** Designed for research and experimentation
+4. **Resource Awareness:** Deep integration with hardware monitoring
+5. **Consent-First Design:** Explicit permission model for all significant actions
+
+**Independence Requirements:**
+
+- Original codebase—no forking or direct code copying
+- Distinct branding and identity
+- Unique architectural decisions driven by quantum workflow needs
+- Custom feature set tailored to simulation use cases
+- Separate development roadmap and versioning
+
+---
+
+### Part 16: Mandatory Features Overview
+
+**MANDATORY FEATURES (NON-NEGOTIABLE)**
+
+The following features are absolute requirements for Proxima. No compromise is acceptable on these capabilities.
+
+**Feature Categories:**
+
+| #   | Feature                                 | Priority | Status   |
+| --- | --------------------------------------- | -------- | -------- |
+| 1   | Execution Timer & Transparency          | Critical | Required |
+| 2   | Backend Selection & Intelligence        | Critical | Required |
+| 3   | Fail-Safe & Resource Awareness          | Critical | Required |
+| 4   | Execution Control                       | Critical | Required |
+| 5   | Result Interpretation & Insights        | Critical | Required |
+| 6   | Multi-Backend Comparison                | Critical | Required |
+| 7   | Planning, Analysis & Execution Pipeline | Critical | Required |
+| 8   | API Key & Local LLM Integration         | Critical | Required |
+| 9   | proxima_agent.md Compatibility          | Critical | Required |
+| 10  | Additional Inspired Features            | High     | Required |
+| 11  | Future UI Planning                      | Medium   | Planned  |
+
+**Non-Negotiable Meaning:**
+
+- These features define Proxima's core value proposition
+- Missing any feature renders the system incomplete
+- Each feature must be fully functional before release
+- Quality standards cannot be lowered for any feature
+
+---
+
+### Part 17: Execution Timer & Transparency
+
+**Feature Requirement:**
+
+The agent must clearly display execution information at all times during operation.
+
+**Required Display Elements:**
+
+**1. Current Running Task/Process**
+
+- Display what code, process, or task is currently executing
+- Show the exact operation being performed
+- Include relevant context (file names, function names, backend being used)
+- Update in real-time as execution progresses
+
+**2. Elapsed Time Tracking**
+
+- Show how long the current task has been running
+- Display in human-readable format (e.g., "2m 34s" or "00:02:34")
+- Update continuously during execution
+- Provide time estimates when possible (e.g., "~3 minutes remaining")
+
+**3. Stage-Level Execution Tracking**
+
+- Break down complex operations into visible stages
+- Show progress through each stage
+- Indicate current stage vs. total stages (e.g., "Stage 3/7: Executing Circuit")
+- Provide stage-specific timing information
+
+**Implementation Requirements:**
+
+**Visual Indicators:**
+
+- Spinner or progress animation for active tasks
+- Progress bars where percentage completion is determinable
+- Stage completion checkmarks
+- Time counters with sub-second precision when appropriate
+
+**Transparency Levels:**
+
+| Level    | Information Displayed                                                |
+| -------- | -------------------------------------------------------------------- |
+| Minimal  | Current task name, elapsed time                                      |
+| Standard | Task name, elapsed time, current stage, progress indicator           |
+| Verbose  | All above + detailed operation logs, resource usage, backend details |
+
+**User Configuration:**
+
+- Allow users to set preferred transparency level
+- Provide command to toggle between levels during execution
+- Remember user preference across sessions
+
+**Example Display States:**
+
+**During Circuit Execution:**
+
+```
+[Running] Executing quantum circuit on Cirq (State Vector)
+├── Stage: Circuit Compilation [✓] (1.2s)
+├── Stage: Simulation Setup [✓] (0.3s)
+├── Stage: Execution [▶] (12.4s elapsed)
+│   └── Progress: 67% (1024/1536 shots)
+└── Elapsed: 13.9s | Est. remaining: ~7s
+```
+
+**During Multi-Backend Comparison:**
+
+```
+[Comparing] Running circuit across 3 backends
+├── Cirq (State Vector) [✓] Completed (4.2s)
+├── Qiskit Aer (State Vector) [✓] Completed (3.8s)
+├── LRET [▶] Running (2.1s elapsed)
+└── Total elapsed: 6.3s
+```
+
+**Rationale:**
+
+- Users must never wonder "what is happening?"
+- Provides confidence that the system is working
+- Enables informed decisions about aborting long operations
+- Supports debugging and performance analysis
+- Builds trust through transparency
+
+---
+
+### Part 18: Backend Selection & Intelligence
+
+**Feature Requirement #2:**
+
+The user must have full freedom to explicitly choose a backend, with intelligent automatic selection as a fallback.
+
+**User Freedom (Explicit Selection):**
+
+- Users can specify exact backend for any operation
+- Selection options include:
+  - Backend type (LRET, Cirq, Qiskit Aer, custom)
+  - Simulator variant (State Vector, Density Matrix)
+  - Specific configuration parameters
+- User choice always takes precedence over automatic selection
+- No hidden overrides or "we know better" behavior
+
+**Automatic Selection (When User Does Not Choose):**
+
+If the user does NOT explicitly choose a backend, Proxima must:
+
+**1. Analyze the Query or Workload**
+
+- Parse the quantum circuit or simulation request
+- Identify circuit characteristics:
+  - Number of qubits
+  - Gate types and depth
+  - Measurement requirements
+  - Noise model requirements
+  - Precision requirements
+- Evaluate workload constraints:
+  - Available memory
+  - Time constraints
+  - Accuracy requirements
+
+**2. Automatically Select the Most Suitable Backend**
+
+- Apply selection algorithm based on analysis:
+  - Small circuits (< 10 qubits) → Prefer fastest simulator
+  - Noise simulation required → Prefer Density Matrix simulators
+  - Large pure-state circuits → Prefer optimized State Vector simulators
+  - Custom framework needs → Prefer LRET
+  - GPU acceleration needed → Prefer backends with GPU support
+
+**3. Explain Why That Backend Was Chosen**
+
+- Provide clear, natural language explanation
+- Example: "Selected Qiskit Aer State Vector Simulator because: (1) Your circuit has 8 qubits with pure-state evolution, (2) No noise model was specified, (3) This backend offers the fastest execution for your circuit depth."
+
+**Selection Transparency Requirements:**
+
+| Scenario                           | Required Behavior                               |
+| ---------------------------------- | ----------------------------------------------- |
+| User specifies backend             | Use exactly as specified, confirm selection     |
+| User doesn't specify               | Auto-select, explain reasoning before execution |
+| Auto-selected backend unavailable  | Inform user, suggest alternatives               |
+| Multiple backends equally suitable | Present options, ask user to choose             |
+
+---
+
+### Part 19: Fail-Safe, Resource Awareness & Explicit Consent
+
+**Feature Requirement #3:**
+
+Proxima must detect, handle, and communicate resource constraints with explicit user consent for risky operations.
+
+**Resource Detection Requirements:**
+
+Proxima must detect and handle:
+
+**1. Low Memory Conditions**
+
+- Monitor available RAM continuously during operation
+- Threshold warnings at 80%, 90%, 95% memory usage
+- Pre-execution estimation of memory requirements
+- Comparison of required vs. available memory
+
+**2. Memory Exhaustion**
+
+- Detect approaching out-of-memory conditions
+- Graceful degradation before crash
+- Safe state preservation when possible
+- Clear error messaging if exhaustion occurs
+
+**3. RAM Limits**
+
+- Detect system RAM capacity
+- Calculate per-backend memory requirements
+- Scale recommendations based on available resources
+- Suggest circuit simplification if needed
+
+**4. Hardware Incompatibility**
+
+- GPU availability detection for CUDA-accelerated backends
+- CPU instruction set compatibility
+- Operating system compatibility
+- Python version and dependency compatibility
+
+**Silent Action Prohibition:**
+
+- **No action may occur silently**
+- All significant operations require user acknowledgment
+- All warnings must be displayed prominently
+- All risks must be explained before proceeding
+
+**Hardware Incompatibility Protocol:**
+
+If user hardware is incompatible, Proxima must:
+
+**Step 1: Clearly Warn the User**
+
+```
+⚠️ WARNING: Hardware Incompatibility Detected
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Your system may not be able to execute this operation safely.
+```
+
+**Step 2: Explain Risks and Limitations**
+
+```
+DETECTED ISSUES:
+• Insufficient RAM: 4GB available, ~6GB required
+• No CUDA GPU: GPU acceleration unavailable
+
+POTENTIAL RISKS:
+• System may become unresponsive
+• Execution may fail mid-computation
+• Results may be incomplete or corrupted
+```
+
+**Step 3: Offer Explicit "Force Execute Anyway" Option**
+
+```
+OPTIONS:
+[1] Cancel operation (recommended)
+[2] Reduce circuit size to fit resources
+[3] Force execute anyway (NOT RECOMMENDED)
+    └── Requires explicit confirmation: Type "FORCE EXECUTE"
+```
+
+**Step 4: Proceed Only After Direct, Explicit User Consent**
+
+- Passive defaults (hitting Enter) must NOT proceed with risky operations
+- Require active confirmation (typing specific phrase)
+- Log consent for accountability
+
+---
+
+### Part 20: Execution Control
+
+**Feature Requirement #4:**
+
+Proxima must provide comprehensive execution control with visible state transitions.
+
+**Required Control Operations:**
+
+**1. Start**
+
+- Initiate execution of planned task
+- Pre-execution validation checks
+- Resource allocation and setup
+- Clear confirmation of execution beginning
+
+**2. Abort**
+
+- Immediately stop current execution
+- Clean up partial resources
+- Report execution state at abort time
+- No data corruption from abort
+
+**3. Rollback (If Feasible, But Preferred)**
+
+- Restore system to pre-execution state
+- Undo partial changes where possible
+- Clear indication of what was rolled back
+- Explanation if rollback is not possible
+
+**4. Pause (If Feasible)**
+
+- Suspend execution without losing progress
+- Preserve current state in memory
+- Report pause status and resources held
+- Allow inspection during pause
+
+**5. Resume (If Feasible)**
+
+- Continue from paused state
+- Verify state integrity before resuming
+- Report resumed position
+- Handle timeout scenarios
+
+**State Transition Visibility:**
+
+All state transitions must be visible and traceable:
+
+```
+EXECUTION STATE MACHINE:
+
+    ┌──────────┐
+    │   IDLE   │ ◄────────────────┐
+    └────┬─────┘                  │
+         │ start                  │
+         ▼                        │
+    ┌──────────┐     pause   ┌────┴─────┐
+    │ RUNNING  │ ───────────►│  PAUSED  │
+    └────┬─────┘             └────┬─────┘
+         │                        │ resume
+         │ ◄──────────────────────┘
+         │
+    ┌────┴────┬─────────────┐
+    │         │             │
+    ▼         ▼             ▼
+┌───────┐ ┌───────┐ ┌───────────┐
+│COMPLETE│ │ABORTED│ │  FAILED   │
+└───────┘ └───────┘ └───────────┘
+         │
+         ▼
+    ┌──────────┐
+    │ ROLLBACK │
+    └──────────┘
+```
+
+**State Logging:**
+
+- Every transition logged with timestamp
+- Reason for transition recorded
+- State history accessible to user
+- Export capability for debugging
+
+---
+
+### Part 21: Result Interpretation & Insights
+
+**Feature Requirement #5:**
+
+Proxima must generate clear, meaningful insights from simulation outputs—not raw data dumps.
+
+**Supported Output Formats:**
+
+- `.xlsx` files (Excel spreadsheets)
+- `.csv` files (Comma-separated values)
+- JSON result objects
+- Native backend result formats
+
+**Insight Quality Requirements:**
+
+**1. Human-Readable**
+
+- Clear language, minimal jargon
+- Proper formatting and structure
+- Visual elements where helpful (tables, summaries)
+- Appropriate level of detail based on user expertise
+
+**2. Analytical**
+
+- Statistical summaries (mean, variance, distribution)
+- Pattern identification
+- Anomaly detection
+- Trend analysis across multiple runs
+
+**3. Decision-Oriented**
+
+- Actionable conclusions
+- Recommendations for next steps
+- Confidence levels for findings
+- Trade-off analysis when relevant
+
+**4. Not Raw Data Dumps**
+
+- Never output unprocessed arrays or matrices
+- Always contextualize numerical results
+- Explain what numbers mean
+- Highlight significant findings
+
+**Insight Generation Pipeline:**
+
+```
+Raw Results → Parsing → Statistical Analysis → Pattern Detection →
+Insight Formulation → Natural Language Generation → User Presentation
+```
+
+**Example Insight Output:**
+
+Instead of:
+
+```
+[0.498, 0.502, 0.001, 0.001, ...]
+```
+
+Provide:
+
+```
+SIMULATION INSIGHTS
+═══════════════════
+
+📊 Measurement Distribution Analysis
+   • Dominant states: |00⟩ (49.8%), |01⟩ (50.2%)
+   • Near-zero probability states: |10⟩, |11⟩ (< 0.1% each)
+
+🎯 Key Finding
+   Your circuit produces an approximately equal superposition
+   of the first two basis states, consistent with a Hadamard
+   gate applied to the first qubit.
+
+📈 Statistical Summary
+   • Shots: 1024
+   • Entropy: 0.999 bits (max: 1.0)
+   • Fidelity to ideal: 99.7%
+
+💡 Recommendation
+   Results show high fidelity. Consider increasing shot count
+   for more precise probability estimates if needed.
+```
+
+---
+
+### Part 22: Multi-Backend Comparison
+
+**Feature Requirement #6:**
+
+Enable running and comparing identical simulations across multiple backends within a single execution.
+
+**Comparison Capabilities:**
+
+**1. Multiple Backends**
+
+- Select 2 or more backends for comparison
+- Include any combination of supported backends
+- Support mixed simulator types
+
+**2. Identical Parameters**
+
+- Ensure exact same circuit is executed
+- Use identical shot counts
+- Apply equivalent noise models where applicable
+- Control for random seed when possible
+
+**3. Within Same Execution Run**
+
+- Single command triggers all backend executions
+- Coordinated parallel or sequential execution
+- Unified progress tracking
+- Combined result collection
+
+**4. Structured Comparative Analysis**
+
+Provide comparison across:
+
+| Metric                  | Cirq SV         | Qiskit Aer SV | LRET  |
+| ----------------------- | --------------- | ------------- | ----- | ----- |
+| Execution Time          | 4.2s            | 3.8s          | 5.1s  |
+| Memory Usage            | 128MB           | 142MB         | 98MB  |
+|                         | 00⟩ Probability | 0.498         | 0.501 | 0.499 |
+|                         | 01⟩ Probability | 0.502         | 0.499 | 0.501 |
+| Fidelity (vs reference) | 99.9%           | 99.8%         | 99.7% |
+
+**Comparison Report Sections:**
+
+1. **Performance Comparison:** Time, memory, throughput
+2. **Result Accuracy:** Probability distributions, fidelity metrics
+3. **Discrepancy Analysis:** Where backends differ and why
+4. **Recommendation:** Which backend suits the use case best
+
+---
+
+### Part 23: Planning, Analysis & Execution Pipeline
+
+**Feature Requirement #7:**
+
+Proxima must follow a structured pipeline with transparent stages.
+
+**Pipeline Stages:**
+
+**Stage 1: Plan the Task**
+
+- Parse user request
+- Identify required operations
+- Determine resource requirements
+- Create execution plan
+- Present plan to user for approval
+
+**Stage 2: Analyze Requirements**
+
+- Validate circuit syntax and semantics
+- Check backend compatibility
+- Assess resource availability
+- Identify potential issues
+- Generate risk assessment
+
+**Stage 3: Execute in Structured Stages**
+
+- Execute plan step-by-step
+- Report progress at each stage
+- Handle errors gracefully
+- Maintain execution log
+
+**Transparency Requirements:**
+
+Each stage must be:
+
+- **Visible:** User can see current stage
+- **Explainable:** User can understand why this stage is needed
+- **Interruptible:** User can pause or abort between stages
+- **Logged:** Complete record maintained
+
+**Example Pipeline Display:**
+
+```
+EXECUTION PIPELINE
+══════════════════
+
+[✓] Stage 1: Planning
+    └── Created execution plan for 3-qubit GHZ circuit
+
+[✓] Stage 2: Analysis
+    └── Validated circuit, estimated 45MB memory requirement
+
+[▶] Stage 3: Execution
+    ├── Substage 3.1: Backend initialization [✓]
+    ├── Substage 3.2: Circuit compilation [✓]
+    ├── Substage 3.3: Simulation running [▶] 67%
+    └── Substage 3.4: Result collection [pending]
+
+[ ] Stage 4: Interpretation
+    └── Waiting for execution completion
+```
+
+---
+
+### Part 24: API Key & Local LLM Integration
+
+**Feature Requirement #8:**
+
+Support both API-based and local LLM integration with explicit consent protocols.
+
+**API Key Integration:**
+
+- Support for major LLM providers (OpenAI, Anthropic, etc.)
+- Secure API key storage and management
+- Key validation before use
+- Usage tracking and reporting
+
+**LLM-Assisted Backend Modification:**
+
+- Proxima can modify backend behavior based on user requirements
+- Modifications guided by LLM analysis of user intent
+- **Requires explicit user permission before any modification**
+
+**Local LLM Integration:**
+
+If the user has a locally installed LLM, Proxima must:
+
+**1. Offer as Execution Option**
+
+```
+LLM OPTIONS DETECTED
+════════════════════
+[1] Use local LLM: Ollama (llama3:8b)
+[2] Use remote API: OpenAI GPT-4
+[3] Proceed without LLM assistance
+```
+
+**2. Allow LLM to Assist In:**
+
+- **Modifying backend logic (conceptually):** Suggest parameter changes, optimization strategies
+- **Explaining results:** Generate natural language interpretations
+- **Analyzing outputs:** Identify patterns, anomalies, insights
+
+**3. Clearly Distinguish Between:**
+
+| Indicator | Meaning                                    |
+| --------- | ------------------------------------------ |
+| 🏠 LOCAL  | Using local LLM (data stays on device)     |
+| 🌐 REMOTE | Using API-based LLM (data sent externally) |
+
+**4. Explicit Consent Requirements:**
+
+- Always require user consent before invoking any LLM
+- Separate consent for local vs. remote
+- Explain what data will be processed
+- Allow per-session or persistent consent
+
+**Consent Dialog Example:**
+
+```
+LLM ASSISTANCE REQUEST
+══════════════════════
+
+Proxima would like to use an LLM to analyze your simulation results.
+
+📤 Data to be processed:
+   • Measurement probabilities (1024 values)
+   • Circuit description (15 gates)
+
+🌐 Using: OpenAI GPT-4 (remote API)
+   └── Data will be sent to OpenAI servers
+
+[Y] Yes, proceed with LLM analysis
+[N] No, skip LLM analysis
+[L] Switch to local LLM instead
+```
+
+---
+
+### Part 25: proxima_agent.md Compatibility
+
+**Feature Requirement #9:**
+
+Design architecture to support future consumption of instruction files.
+
+**Future Capability:**
+
+Proxima must be designed so it can later:
+
+- **Consume:** Read and parse `proxima_agent.md` files
+- **Interpret:** Understand structured instructions within the file
+- **Execute:** Carry out instructions as autonomous workflows
+
+**Architecture Requirements:**
+
+**1. Instruction Parser Interface**
+
+- Define abstract interface for instruction parsing
+- Allow pluggable parsers for different formats
+- Support Markdown-based instruction format
+
+**2. Workflow Engine**
+
+- Task queue management
+- Conditional execution support
+- Loop and iteration handling
+- Error recovery mechanisms
+
+**3. Instruction Schema (Future Definition)**
+
+Anticipated structure:
+
+```markdown
+# proxima_agent.md
+
+## Task: Run Bell State Experiment
+
+### Parameters
+
+- qubits: 2
+- shots: 4096
+- backends: [cirq_sv, qiskit_sv]
+
+### Steps
+
+1. Create Bell state circuit
+2. Execute on all specified backends
+3. Compare results
+4. Generate report
+
+### On Error
+
+- Retry up to 3 times
+- If persistent, notify user
+```
+
+**Current Implementation:**
+
+- Design all components with instruction-driven execution in mind
+- Use command pattern for all operations
+- Maintain operation history for replay capability
+- Build modular, composable workflow primitives
+
+---
+
+### Part 26: Additional Inspired Features
+
+**Feature Requirement #10:**
+
+Include valuable features inspired by OpenCode AI and Crush.
+
+**Feature 1: Conversation Memory & Context**
+
+_Inspired by: OpenCode AI_
+
+- Maintain context across multiple interactions
+- Remember previous circuits, results, preferences
+- Enable follow-up queries ("Run that again with more shots")
+- **User Value:** Reduces repetition, enables iterative exploration
+- **System Robustness:** Improves accuracy of intent understanding
+
+**Feature 2: Interactive REPL Mode**
+
+_Inspired by: Crush (Charmbracelet)_
+
+- Real-time quantum circuit building
+- Immediate feedback on circuit validity
+- Quick execution of small experiments
+- **User Value:** Rapid prototyping and learning
+- **System Robustness:** Catches errors early
+
+**Feature 3: Rich Terminal Formatting**
+
+_Inspired by: Crush (Charmbracelet)_
+
+- Beautiful, readable output using terminal styling
+- Tables, progress bars, spinners, colors
+- Adaptive to terminal capabilities
+- **User Value:** Pleasant, professional experience
+- **System Robustness:** Clear communication reduces confusion
+
+**Feature 4: Command History & Replay**
+
+_Inspired by: OpenCode AI_
+
+- Save all executed commands
+- Replay previous operations
+- Share command sequences
+- **User Value:** Reproducibility, collaboration
+- **System Robustness:** Debugging, audit trail
+
+**Feature 5: Configuration Profiles**
+
+_Inspired by: Both projects_
+
+- Save named configurations (backend preferences, defaults)
+- Quick switching between profiles
+- Import/export configurations
+- **User Value:** Workflow efficiency
+- **System Robustness:** Consistent environments
+
+**Feature 6: Plugin Ecosystem**
+
+_Inspired by: OpenCode AI architecture_
+
+- Extensible plugin interface
+- Community-contributed backends and tools
+- Safe sandbox execution for plugins
+- **User Value:** Customization, extended capabilities
+- **System Robustness:** Modular, maintainable codebase
+
+---
+
+### Part 27: Future UI Considerations
+
+**Feature Requirement #11:**
+
+Acknowledge UI importance while deferring detailed implementation.
+
+**Ultimate UI Goals:**
+
+Proxima should ultimately have:
+
+- **Smooth:** Responsive, no lag or jank
+- **Clean:** Minimal, uncluttered interface
+- **Modern:** Contemporary design patterns
+- **Good-looking:** Aesthetically pleasing
+
+**Current Priority:**
+
+- UI design is **NOT the main focus for now**
+- Treat UI considerations as **future work only**
+- Focus on CLI/TUI excellence first
+
+**Future UI Roadmap:**
+
+| Phase     | UI Focus                      |
+| --------- | ----------------------------- |
+| Phase 1-4 | CLI only, no UI work          |
+| Phase 5   | TUI enhancements (Bubble Tea) |
+| Phase 6+  | Web UI exploration (optional) |
+
+**UI Technology Considerations (Future):**
+
+- **TUI:** Bubble Tea (Go), Rich/Textual (Python)
+- **Web:** React, Vue, or Svelte frontend
+- **Desktop:** Electron, Tauri, or native
+
+---
+
+### Part 28: Response Structure Requirements
+
+**Document Organization (STRICT & ENFORCED):**
+
+This guide MUST be long, exhaustive, and structured exactly as follows:
+
+**Required Sections:**
+
+1. Strategic System Sketch
+2. Phased Roadmap
+3. Phase-by-Phase Implementation Guide
+4. Phase Summaries & Usage Guidance
+
+**Quality Standards:**
+
+- Comprehensive coverage of all topics
+- Clear, logical organization
+- Actionable guidance throughout
+- No gaps in information
+
+---
+
+### Part 29: Strategic System Sketch Details
+
+**Required Content:**
+
+**1. Overall Architecture**
+
+- Layer diagram (User Interface → Orchestration → Intelligence → Resources → Backends → Data)
+- Component relationships
+- Dependency structure
+
+**2. Core Components**
+
+- Each major module defined
+- Responsibilities clearly stated
+- Interfaces between components
+
+**3. Data, Control, and Decision Flow**
+
+- How data moves through the system
+- Control flow for operations
+- Decision points and logic
+
+**4. How All Features Interconnect**
+
+- Feature dependency map
+- Shared services identification
+- Integration points
+
+---
+
+### Part 30: Phased Roadmap Structure
+
+**Requirements:**
+
+**1. Divide Journey into Clear, Logical Phases**
+
+- Each phase has distinct goals
+- Phases build upon each other
+- Clear entry and exit criteria
+
+**2. Each Phase Moves Proxima Closer to Final System**
+
+- Progressive capability addition
+- Testable milestones
+- Demonstrable progress
+
+**Recommended Phase Structure:**
+
+| Phase | Focus           | Outcome                      |
+| ----- | --------------- | ---------------------------- |
+| 1     | Foundation      | Core infrastructure          |
+| 2     | Basic Execution | Single backend working       |
+| 3     | Intelligence    | Auto-selection, insights     |
+| 4     | Multi-Backend   | Comparison capabilities      |
+| 5     | LLM Integration | AI-assisted features         |
+| 6     | Polish          | UI, documentation, stability |
+
+---
+
+### Part 31: Phase Implementation Guide Requirements
+
+**For Each Phase, Provide:**
+
+**1. Step-by-Step Technical Instructions**
+
+- Ordered sequence of implementation steps
+- Dependencies between steps identified
+- Clear completion criteria
+
+**2. Descriptions Only (No Code)**
+
+- Describe what to implement
+- Explain the logic and approach
+- Reference patterns and techniques
+
+**3. Use Names of Libraries, Frameworks, and Tools**
+
+- Specific technology recommendations
+- Version considerations where relevant
+- Alternative options noted
+
+**4. Detailed Enough for Advanced AI to Follow**
+
+- GPT-5.1 Codex Max or Claude Opus 4.5 should be able to implement directly
+- No ambiguity in instructions
+- Complete information provided
+
+**5. No Missing Steps, No Vague Guidance**
+
+- Every necessary step included
+- Specific rather than general
+- Actionable instructions
+
+---
+
+### Part 32: Phase Summaries & Usage Requirements
+
+**For Each Phase, Provide:**
+
+**1. Summarize Features Implemented**
+
+- List of capabilities added
+- What's now possible that wasn't before
+- Technical achievements
+
+**2. Describe New System Capabilities**
+
+- User-facing functionality
+- Internal improvements
+- Performance characteristics
+
+**3. Provide Clear Instructions and Operational Guidance**
+
+- How to use new features
+- Example commands/workflows
+- Common scenarios addressed
+
+**Summary Format Example:**
+
+```
+PHASE X SUMMARY
+═══════════════
+
+✅ Features Implemented:
+   • Feature A: [description]
+   • Feature B: [description]
+
+🚀 New Capabilities:
+   • Users can now [capability]
+   • System now supports [capability]
+
+📖 Usage Guide:
+   To use Feature A:
+   1. [Step 1]
+   2. [Step 2]
+
+   Example: [concrete example]
+```
+
+---
+
 _Document generated for the Proxima AI Agent project. This is a living document—update as the project evolves._
