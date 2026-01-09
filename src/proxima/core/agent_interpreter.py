@@ -658,8 +658,9 @@ class DefaultTaskExecutor:
             backend_name = selection.backend
 
         # Get adapter and execute
-        adapter = backend_registry.get_adapter(backend_name)
-        if not adapter:
+        try:
+            adapter = backend_registry.get(backend_name)
+        except KeyError:
             return {
                 "task_type": "circuit_execution",
                 "success": False,
@@ -697,13 +698,30 @@ class DefaultTaskExecutor:
         """Execute a backend comparison task using MultiBackendComparator."""
         import asyncio
 
+        from proxima.backends.registry import backend_registry
         from proxima.data.compare import MultiBackendComparator
 
         params = task.parameters
         circuit = params.get("circuit")
-        backends = params.get("backends", ["cirq", "qiskit"])
+        backend_names = params.get("backends", ["cirq", "qiskit"])
         shots = params.get("shots", 1024)
         options = {"shots": shots}
+
+        # Get adapters for each backend name
+        adapters = []
+        for name in backend_names:
+            try:
+                adapters.append(backend_registry.get(name))
+            except KeyError:
+                pass  # Skip unavailable backends
+
+        if not adapters:
+            return {
+                "task_type": "backend_comparison",
+                "success": False,
+                "backends": backend_names,
+                "error": "No valid backends available for comparison",
+            }
 
         comparator = MultiBackendComparator()
 
@@ -716,13 +734,13 @@ class DefaultTaskExecutor:
 
         try:
             report = loop.run_until_complete(
-                comparator.compare(circuit, backends, options)
+                comparator.compare(adapters, circuit, options)
             )
             return {
                 "task_type": "backend_comparison",
                 "success": True,
                 "report": report.to_dict(),
-                "backends": backends,
+                "backends": backend_names,
                 "recommended": report.metrics.recommended_backend,
             }
         except Exception as e:
@@ -735,7 +753,7 @@ class DefaultTaskExecutor:
 
     def _execute_analysis(self, task: TaskDefinition, context: dict[str, Any]) -> Any:
         """Execute a result analysis task using the insights engine."""
-        from proxima.intelligence.insights import ResultInsightEngine
+        from proxima.intelligence.insights import InsightEngine
 
         params = task.parameters
         result_data = params.get("result", context.get("last_result"))
@@ -747,7 +765,7 @@ class DefaultTaskExecutor:
                 "error": "No result data provided for analysis",
             }
 
-        engine = ResultInsightEngine()
+        engine = InsightEngine()
         try:
             insights = engine.analyze(result_data)
             return {
@@ -813,15 +831,15 @@ class DefaultTaskExecutor:
                 "task_type": "export",
                 "success": result.success,
                 "format": format_str,
-                "output": output_path or "stdout",
-                "content": result.content[:500] if result.content else None,
+                "output": str(result.output_path) if result.output_path else "stdout",
+                "file_size_bytes": result.file_size_bytes,
                 "error": result.error,
             }
         except Exception as e:
             return {
                 "task_type": "export",
                 "success": False,
-                "format": format_type,
+                "format": format_str,
                 "error": str(e),
             }
 
