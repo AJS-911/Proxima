@@ -7,14 +7,16 @@ from pathlib import Path
 import typer
 
 from proxima.cli import utils as cli_utils
-from proxima.cli.commands import agent as agent_commands
-from proxima.cli.commands import backends as backends_commands
-from proxima.cli.commands import compare as compare_commands
-from proxima.cli.commands import config as config_commands
-from proxima.cli.commands import history as history_commands
-from proxima.cli.commands import run as run_commands
-from proxima.cli.commands import session as session_commands
-from proxima.cli.commands import ui as ui_commands
+from proxima.cli.commands import (
+    agent as agent_commands,
+    backends as backends_commands,
+    compare as compare_commands,
+    config as config_commands,
+    history as history_commands,
+    run as run_commands,
+    session as session_commands,
+    ui as ui_commands,
+)
 from proxima.config.settings import config_service
 from proxima.utils.logging import configure_from_settings
 

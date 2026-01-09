@@ -207,6 +207,11 @@ ignore = [
 "src/proxima/utils/integrations.py" = ["F401"]
 "src/proxima/data/export.py" = ["F401", "E722"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["proxima"]
+force-single-line = false
+combine-as-imports = true
+
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = false

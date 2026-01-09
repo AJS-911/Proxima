@@ -16,12 +16,10 @@ from textual.widgets import (
     DataTable,
     Input,
     Label,
+    ProgressBar as TextualProgressBar,
     RichLog,
     Static,
     Switch,
-)
-from textual.widgets import (
-    ProgressBar as TextualProgressBar,
 )
 
 

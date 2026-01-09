@@ -25,7 +25,6 @@ from proxima.backends.base import (
 )
 from proxima.backends.registry import backend_registry
 
-
 # Simple history store for user preferences
 _HISTORY_FILE = Path.home() / ".proxima" / "backend_history.json"
 
