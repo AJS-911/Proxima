@@ -747,7 +747,7 @@ class DefaultTaskExecutor:
             return {
                 "task_type": "backend_comparison",
                 "success": False,
-                "backends": backends,
+                "backends": backend_names,
                 "error": str(e),
             }
 

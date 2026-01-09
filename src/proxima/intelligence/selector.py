@@ -17,12 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from proxima.backends.base import (
-    BaseBackendAdapter,
-    Capabilities,
-    ResourceEstimate,
-    SimulatorType,
-)
+from proxima.backends.base import BaseBackendAdapter, Capabilities, ResourceEstimate, SimulatorType
 from proxima.backends.registry import backend_registry
 
 
