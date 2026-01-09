@@ -2,6 +2,9 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyPI version](https://img.shields.io/pypi/v/proxima-agent.svg)](https://pypi.org/project/proxima-agent/)
+[![Docker Image](https://img.shields.io/docker/v/proxima-project/proxima-agent?label=docker)](https://ghcr.io/proxima-project/proxima)
+[![CI](https://github.com/proxima-project/proxima/actions/workflows/ci.yml/badge.svg)](https://github.com/proxima-project/proxima/actions/workflows/ci.yml)
 
 Proxima is an intelligent quantum simulation orchestration framework that provides a unified interface for running quantum simulations across multiple backends with advanced features like automatic backend selection, resource monitoring, and intelligent result interpretation.
 
@@ -19,6 +22,54 @@ Proxima is an intelligent quantum simulation orchestration framework that provid
 
 ## Installation
 
+### From PyPI (Recommended)
+
+```bash
+# Install the base package
+pip install proxima-agent
+
+# Install with all optional dependencies (LLM, TUI, dev tools)
+pip install proxima-agent[all]
+
+# Install specific extras
+pip install proxima-agent[llm]    # LLM integrations (OpenAI, Anthropic)
+pip install proxima-agent[ui]     # Terminal UI (Textual)
+pip install proxima-agent[dev]    # Development tools
+```
+
+### Using Docker
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/proxima-project/proxima:latest
+
+# Run with Docker
+docker run --rm -it ghcr.io/proxima-project/proxima:latest --help
+
+# Run a simulation
+docker run --rm -it \
+  -v ~/.proxima:/home/proxima/.proxima \
+  ghcr.io/proxima-project/proxima:latest \
+  run --backend cirq "bell state"
+
+# Using Docker Compose
+docker-compose up -d proxima
+docker-compose run proxima backends list
+```
+
+### Using Homebrew (macOS/Linux)
+
+```bash
+# Add the tap
+brew tap proxima-project/proxima
+
+# Install
+brew install proxima
+
+# Verify installation
+proxima version
+```
+
 ### From Source
 
 ```bash
@@ -26,23 +77,28 @@ Proxima is an intelligent quantum simulation orchestration framework that provid
 git clone https://github.com/proxima-project/proxima.git
 cd proxima
 
-# Install dependencies
-pip install -e .
-
-# Install with all optional dependencies
+# Install in development mode
 pip install -e ".[all]"
+
+# Or use the build script
+python scripts/build.py build
 ```
 
-### Dependencies Only
+### Standalone Binaries
+
+Download pre-built binaries from the [Releases](https://github.com/proxima-project/proxima/releases) page:
+
+- **Linux**: `proxima-linux-x86_64`
+- **macOS Intel**: `proxima-darwin-x86_64`
+- **macOS Apple Silicon**: `proxima-darwin-arm64`
+- **Windows**: `proxima-windows-x86_64.exe`
 
 ```bash
-pip install -e .
-```
+# Make executable (Linux/macOS)
+chmod +x proxima-linux-x86_64
 
-### Development Setup
-
-```bash
-pip install -e ".[dev]"
+# Run
+./proxima-linux-x86_64 --help
 ```
 
 ## Quick Start
@@ -57,8 +113,30 @@ proxima version
 # List available backends
 proxima backends list
 
-# Run a simulation (to be implemented)
-proxima run --backend cirq simulation.py
+# Run a simulation
+proxima run --backend cirq "bell state"
+
+# Compare across backends
+proxima compare --backends cirq,qiskit "quantum teleportation"
+```
+
+## Docker Quick Start
+
+```bash
+# Run with Docker Compose
+docker-compose up -d
+
+# Execute commands
+docker-compose run proxima backends list
+docker-compose run proxima run --backend cirq "entanglement"
+
+# With local LLM support (Ollama)
+docker-compose --profile llm up -d
+docker-compose run proxima run --llm ollama "analyze circuit"
+
+# Development mode
+docker-compose --profile dev up -d
+docker-compose exec proxima-dev pytest
 ```
 
 ## Project Structure
@@ -76,6 +154,8 @@ proxima/
 │   └── utils/            # Utilities
 ├── tests/                # Test suites
 ├── configs/              # Configuration files
+├── scripts/              # Build and release scripts
+├── packaging/            # Distribution packaging
 └── docs/                 # Documentation
 ```
 
@@ -92,17 +172,40 @@ Proxima supports multiple configuration sources (in priority order):
 ## Development
 
 ```bash
-# Run tests
-pytest
+# Using the build script (recommended)
+python scripts/build.py all          # Run all checks
+python scripts/build.py test         # Run tests
+python scripts/build.py lint         # Run linting
+python scripts/build.py build        # Build package
+python scripts/build.py release --version 0.1.0  # Prepare release
 
-# Format code
-black src/ tests/
+# Or using PowerShell on Windows
+.\scripts\build.ps1 all
+.\scripts\build.ps1 test -Coverage
 
-# Lint code
-ruff check src/ tests/
+# Manual commands
+pytest                               # Run tests
+pytest --cov=proxima                 # With coverage
+black src/ tests/                    # Format code
+ruff check src/ tests/               # Lint code
+mypy src/                            # Type check
+mkdocs serve                         # Serve docs locally
+```
 
-# Type check
-mypy src/
+## Building & Releasing
+
+```bash
+# Build Python package
+python -m build
+
+# Build Docker image
+docker build -t proxima-agent:latest .
+
+# Prepare a release (dry run)
+python scripts/build.py release --version 0.2.0
+
+# Execute release
+python scripts/build.py release --version 0.2.0 --no-dry-run
 ```
 
 ## Architecture
@@ -118,12 +221,12 @@ Proxima follows a layered modular architecture:
 
 ## Roadmap
 
-- **Phase 1** (Weeks 1-4): Foundation & Core Infrastructure
-- **Phase 2** (Weeks 5-9): Backend Integration
-- **Phase 3** (Weeks 10-14): Intelligence Features
-- **Phase 4** (Weeks 15-18): Safety & Resource Management
-- **Phase 5** (Weeks 19-23): Advanced Features
-- **Phase 6** (Weeks 24-27): Production Ready
+- **Phase 1** (Weeks 1-4): Foundation & Core Infrastructure ✅
+- **Phase 2** (Weeks 5-9): Backend Integration ✅
+- **Phase 3** (Weeks 10-14): Intelligence Features ✅
+- **Phase 4** (Weeks 15-18): Safety & Resource Management ✅
+- **Phase 5** (Weeks 19-23): Advanced Features ✅
+- **Phase 6** (Weeks 24-27): Production Ready ✅
 
 ## License
 
@@ -131,7 +234,9 @@ MIT License - see LICENSE file for details
 
 ## Contributing
 
-Contributions are welcome! Please read our contributing guidelines first.
+Contributions are welcome! Please read our [contributing guidelines](docs/developer-guide/contributing.md) first.
+
+See the [CHANGELOG](CHANGELOG.md) for version history.
 
 ## Credits
 

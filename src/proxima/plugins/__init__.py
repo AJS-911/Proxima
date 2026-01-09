@@ -1,0 +1,46 @@
+"""
+Plugin system for Proxima.
+
+Provides extensibility through custom backends, LLM providers, and exporters.
+"""
+
+from proxima.plugins.base import (
+    Plugin,
+    PluginType,
+    PluginMetadata,
+    PluginError,
+    PluginLoadError,
+    PluginValidationError,
+)
+from proxima.plugins.loader import (
+    PluginLoader,
+    PluginRegistry,
+    get_plugin_registry,
+    discover_plugins,
+    load_plugin,
+)
+from proxima.plugins.hooks import (
+    HookType,
+    HookManager,
+    get_hook_manager,
+)
+
+__all__ = [
+    # Base
+    "Plugin",
+    "PluginType",
+    "PluginMetadata",
+    "PluginError",
+    "PluginLoadError",
+    "PluginValidationError",
+    # Loader
+    "PluginLoader",
+    "PluginRegistry",
+    "get_plugin_registry",
+    "discover_plugins",
+    "load_plugin",
+    # Hooks
+    "HookType",
+    "HookManager",
+    "get_hook_manager",
+]

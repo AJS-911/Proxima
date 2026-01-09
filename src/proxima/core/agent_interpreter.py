@@ -709,6 +709,41 @@ class AgentInterpreter:
         if self.progress_callback:
             self.progress_callback(stage, progress)
     
+    def _execute_with_timeout(
+        self,
+        task: TaskDefinition,
+        context: Dict[str, Any],
+        timeout_seconds: Optional[int],
+    ) -> Any:
+        """Execute a task with optional timeout enforcement.
+        
+        Args:
+            task: The task to execute
+            context: Execution context
+            timeout_seconds: Maximum execution time in seconds
+            
+        Returns:
+            Task execution result
+            
+        Raises:
+            TimeoutError: If task exceeds timeout
+        """
+        import concurrent.futures
+        
+        if timeout_seconds is None or timeout_seconds <= 0:
+            # No timeout - execute directly
+            return self.executor.execute(task, context)
+        
+        # Use ThreadPoolExecutor for timeout enforcement
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.executor.execute, task, context)
+            try:
+                return future.result(timeout=timeout_seconds)
+            except concurrent.futures.TimeoutError:
+                raise TimeoutError(
+                    f"Task '{task.id}' exceeded timeout of {timeout_seconds} seconds"
+                )
+    
     def load_file(self, file_path: Path) -> AgentFile:
         """Load and parse an agent.md file."""
         return self.parser.parse_file(file_path)
@@ -906,7 +941,13 @@ class AgentInterpreter:
                     "previous_results": {r.task_id: r for r in task_results},
                 }
                 
-                task_result_data = self.executor.execute(task, task_context)
+                # Get timeout for this task
+                task_timeout = task.timeout_seconds or agent_file.configuration.timeout_seconds
+                
+                # Execute with timeout enforcement
+                task_result_data = self._execute_with_timeout(
+                    task, task_context, task_timeout
+                )
                 
                 result = TaskResult(
                     task_id=task.id,

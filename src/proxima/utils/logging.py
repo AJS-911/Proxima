@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
+import uuid
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
 
@@ -19,6 +22,57 @@ _LEVEL_MAP = {
     "info": logging.INFO,
     "debug": logging.DEBUG,
 }
+
+# Context variable for execution tracking
+_execution_context: ContextVar[dict[str, Any]] = ContextVar("execution_context", default={})
+
+
+def set_execution_context(
+    execution_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    **extra: Any,
+) -> None:
+    """Set execution context for log enrichment.
+    
+    Parameters
+    ----------
+    execution_id : Optional[str]
+        Unique identifier for the current execution run.
+    session_id : Optional[str]
+        Session identifier for grouping related executions.
+    **extra : Any
+        Additional context key-value pairs.
+    """
+    ctx = _execution_context.get().copy()
+    if execution_id:
+        ctx["execution_id"] = execution_id
+    if session_id:
+        ctx["session_id"] = session_id
+    ctx.update(extra)
+    _execution_context.set(ctx)
+
+
+def clear_execution_context() -> None:
+    """Clear the current execution context."""
+    _execution_context.set({})
+
+
+def generate_execution_id() -> str:
+    """Generate a unique execution ID."""
+    return str(uuid.uuid4())[:8]
+
+
+def _add_execution_context(
+    logger: logging.Logger,
+    method_name: str,
+    event_dict: dict[str, Any],
+) -> dict[str, Any]:
+    """Structlog processor to inject execution context."""
+    ctx = _execution_context.get()
+    for key, value in ctx.items():
+        if key not in event_dict:
+            event_dict[key] = value
+    return event_dict
 
 
 def _resolve_level(level: str) -> int:
@@ -63,6 +117,7 @@ def configure_logging(
             structlog.stdlib.add_logger_name,
             structlog.stdlib.add_log_level,
             structlog.stdlib.PositionalArgumentsFormatter(),
+            _add_execution_context,
             timestamper,
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
@@ -105,3 +160,62 @@ def get_logger(name: Optional[str] = None) -> structlog.stdlib.BoundLogger:
     """Return a configured structlog logger."""
 
     return structlog.get_logger(name) if name else structlog.get_logger()
+
+
+class timed_operation:
+    """Context manager for timing operations and logging duration_ms.
+    
+    Usage:
+        with timed_operation("simulation_run", logger=log):
+            # ... your code ...
+        # Logs: {"event": "simulation_run", "duration_ms": 1234.56, ...}
+    
+    Can also be used as a decorator:
+        @timed_operation("process_data")
+        def process_data():
+            ...
+    """
+    
+    def __init__(
+        self,
+        operation_name: str,
+        logger: Optional[structlog.stdlib.BoundLogger] = None,
+        log_level: str = "info",
+        **extra_context: Any,
+    ) -> None:
+        self.operation_name = operation_name
+        self.logger = logger or get_logger()
+        self.log_level = log_level
+        self.extra_context = extra_context
+        self._start_time: float = 0.0
+        
+    def __enter__(self) -> "timed_operation":
+        self._start_time = time.perf_counter()
+        return self
+    
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        duration_ms = (time.perf_counter() - self._start_time) * 1000
+        log_method = getattr(self.logger, self.log_level)
+        
+        status = "failed" if exc_type else "completed"
+        log_method(
+            self.operation_name,
+            duration_ms=round(duration_ms, 2),
+            status=status,
+            **self.extra_context,
+        )
+    
+    def __call__(self, func: Any) -> Any:
+        """Allow usage as a decorator."""
+        import functools
+        
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            with self:
+                return func(*args, **kwargs)
+        return wrapper
+    
+    @property
+    def elapsed_ms(self) -> float:
+        """Get elapsed time in milliseconds (useful during operation)."""
+        return (time.perf_counter() - self._start_time) * 1000

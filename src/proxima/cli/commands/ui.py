@@ -1,0 +1,66 @@
+"""
+TUI CLI commands.
+
+Launch the Terminal User Interface.
+"""
+
+import typer
+
+app = typer.Typer(help="Launch the Terminal User Interface.")
+
+
+@app.callback(invoke_without_command=True)
+def ui_callback(ctx: typer.Context) -> None:
+    """Launch the TUI."""
+    if ctx.invoked_subcommand is None:
+        launch()
+
+
+@app.command("launch")
+def launch(
+    theme: str = typer.Option("dark", "--theme", "-t", help="UI theme (dark|light)"),
+    screen: str = typer.Option("dashboard", "--screen", "-s", help="Initial screen"),
+) -> None:
+    """Launch the Proxima TUI."""
+    try:
+        from proxima.tui.app import ProximaApp
+    except ImportError as e:
+        typer.echo("TUI dependencies not installed.", err=True)
+        typer.echo("Install with: pip install proxima-agent[tui]", err=True)
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo("Launching Proxima TUI...")
+    
+    try:
+        app = ProximaApp()
+        app.run()
+    except Exception as e:
+        typer.echo(f"TUI error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("check")
+def check_tui() -> None:
+    """Check if TUI dependencies are available."""
+    dependencies = {
+        "textual": "TUI framework",
+        "rich": "Rich text rendering",
+    }
+
+    all_ok = True
+    for pkg, desc in dependencies.items():
+        try:
+            __import__(pkg)
+            typer.echo(f"✓ {pkg}: {desc}")
+        except ImportError:
+            typer.echo(f"✗ {pkg}: {desc} (not installed)")
+            all_ok = False
+
+    if all_ok:
+        typer.echo("\n✓ All TUI dependencies are available")
+        typer.echo("Run 'proxima ui' to launch")
+    else:
+        typer.echo("\n✗ Some dependencies are missing")
+        typer.echo("Install with: pip install proxima-agent[tui]")
+        raise typer.Exit(1)

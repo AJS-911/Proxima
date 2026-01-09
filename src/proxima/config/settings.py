@@ -32,6 +32,8 @@ class GeneralSettings(BaseModel):
     verbosity: str = Field(default="info")
     output_format: str = Field(default="text")
     color_enabled: bool = Field(default=True)
+    data_dir: str = Field(default="")
+    storage_backend: str = Field(default="sqlite")
 
 
 class BackendsSettings(BaseModel):
@@ -221,3 +223,37 @@ class ConfigService:
 
 
 config_service = ConfigService()
+
+
+# Convenience singleton for global settings access
+_cached_settings: Optional[Settings] = None
+
+
+def get_settings() -> Settings:
+    """Get the global settings instance."""
+    global _cached_settings
+    if _cached_settings is None:
+        _cached_settings = config_service.load()
+    return _cached_settings
+
+
+def reload_settings() -> Settings:
+    """Reload settings from configuration sources."""
+    global _cached_settings
+    _cached_settings = config_service.load()
+    return _cached_settings
+
+
+class FlatSettings:
+    """Flat accessor for settings values."""
+
+    def __init__(self, settings: Settings):
+        self._settings = settings
+
+    @property
+    def storage_backend(self) -> str:
+        return self._settings.general.storage_backend
+
+    @property
+    def data_dir(self) -> Optional[str]:
+        return self._settings.general.data_dir or None

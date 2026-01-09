@@ -1,0 +1,186 @@
+# Production Configuration for Proxima Agent
+# ============================================
+# This file contains production-ready settings optimized for
+# stability, security, and performance.
+#
+# Usage:
+#   proxima --config configs/production.yaml run simulation.yaml
+#
+# Environment variable overrides:
+#   PROXIMA_LLM_API_KEY - API key for LLM provider
+#   PROXIMA_LOG_LEVEL - Override verbosity level
+#   PROXIMA_OUTPUT_DIR - Override output directory
+
+general:
+  # Production logging level (options: debug, info, warning, error, critical)
+  verbosity: info
+
+  # Output format (text, json, yaml)
+  output_format: json
+
+  # Disable colors for logging (recommended for log aggregation)
+  color_enabled: false
+
+  # Application name for structured logging
+  app_name: proxima-agent
+
+  # Environment identifier
+  environment: production
+
+backends:
+  # Auto-detect available backends (cirq, qiskit-aer, lret)
+  default_backend: auto
+
+  # Enable parallel execution for multiple backends
+  parallel_execution: true
+
+  # Backend execution timeout (5 minutes)
+  timeout_seconds: 300
+
+  # Number of worker processes for parallel execution
+  max_workers: 4
+
+  # Retry configuration for backend failures
+  retry:
+    max_attempts: 3
+    backoff_base_seconds: 1.0
+    backoff_max_seconds: 30.0
+
+llm:
+  # LLM provider (options: none, openai, anthropic, ollama, lm-studio)
+  # For production, prefer local providers for data privacy
+  provider: local_preferred
+
+  # Model selection (empty = provider default)
+  model: ""
+
+  # Local LLM endpoint (for Ollama/LM Studio)
+  local_endpoint: "http://localhost:11434"
+
+  # Environment variable name for API key
+  api_key_env_var: "PROXIMA_LLM_API_KEY"
+
+  # CRITICAL: Always require consent for production
+  require_consent: true
+
+  # Maximum tokens for LLM responses
+  max_tokens: 2048
+
+  # Temperature for LLM responses (lower = more deterministic)
+  temperature: 0.3
+
+  # Request timeout in seconds
+  request_timeout_seconds: 60
+
+resources:
+  # Memory warning threshold (1 GB)
+  memory_warn_threshold_mb: 1024
+
+  # Memory critical threshold (triggers abort)
+  memory_critical_threshold_mb: 4096
+
+  # Maximum execution time (1 hour)
+  max_execution_time_seconds: 3600
+
+  # Check interval for resource monitoring
+  check_interval_seconds: 5
+
+  # CPU usage warning threshold (percent)
+  cpu_warn_threshold_percent: 80
+
+  # Disk space warning threshold (MB)
+  disk_warn_threshold_mb: 1024
+
+consent:
+  # Auto-approve local LLM operations (safer)
+  auto_approve_local_llm: true
+
+  # NEVER auto-approve remote LLM in production
+  auto_approve_remote_llm: false
+
+  # Do not persist consent decisions in production
+  remember_decisions: false
+
+  # Require explicit confirmation for sensitive operations
+  require_confirmation:
+    - send_to_remote_llm
+    - export_results
+    - network_operations
+
+export:
+  # Default export format
+  format: json
+
+  # Include full metadata in exports
+  include_metadata: true
+
+  # Compress large exports
+  compress_large_files: true
+
+  # Compression threshold (10 MB)
+  compression_threshold_mb: 10
+
+  # Validate exported data
+  validate_on_export: true
+
+logging:
+  # Enable structured JSON logging
+  structured: true
+
+  # Log file path (use environment variable for cloud deployments)
+  file_path: "./logs/proxima.log"
+
+  # Log rotation settings
+  rotation:
+    max_size_mb: 100
+    backup_count: 5
+    when: "midnight"
+
+  # Include trace IDs for distributed tracing
+  include_trace_id: true
+
+  # Mask sensitive data in logs
+  mask_sensitive_data: true
+
+security:
+  # Enable input validation
+  validate_inputs: true
+
+  # Maximum file size for processing (100 MB)
+  max_file_size_mb: 100
+
+  # Allowed file extensions
+  allowed_extensions:
+    - .yaml
+    - .yml
+    - .json
+    - .qasm
+    - .py
+
+  # Rate limiting for LLM requests
+  rate_limit:
+    requests_per_minute: 60
+    requests_per_hour: 1000
+
+telemetry:
+  # Disable telemetry in production by default
+  enabled: false
+
+  # If enabled, anonymize data
+  anonymize: true
+
+  # Endpoint for telemetry (if enabled)
+  endpoint: ""
+
+healthcheck:
+  # Enable health check endpoint
+  enabled: true
+
+  # Health check port
+  port: 8080
+
+  # Health check path
+  path: /health
+
+  # Include detailed status
+  include_details: false

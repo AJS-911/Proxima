@@ -35,6 +35,25 @@ import pytest
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+# Import comprehensive mock strategies
+from tests.mocks import (
+    MockDataFactory,
+    MockQuantumBackend,
+    MockBackendRegistry,
+    MockLLMProvider,
+    MockLLMResponse,
+    MockSystemResources,
+    MockPsutil,
+    MockFileSystem,
+    MockConsentManager,
+    MockPipelineHandler,
+    mock_psutil,
+    mock_llm_http_responses,
+    create_low_memory_scenario,
+    create_high_cpu_scenario,
+    create_low_disk_scenario,
+)
+
 
 # =============================================================================
 # PYTEST CONFIGURATION
@@ -379,3 +398,117 @@ def cli_runner():
         return CliRunner()
     except ImportError:
         pytest.skip("click not installed")
+
+
+# =============================================================================
+# COMPREHENSIVE MOCK FIXTURES (from tests/mocks.py)
+# =============================================================================
+
+@pytest.fixture
+def mock_quantum_backend() -> MockQuantumBackend:
+    """Provide a comprehensive mock quantum backend."""
+    return MockQuantumBackend()
+
+
+@pytest.fixture
+def mock_backend_registry() -> MockBackendRegistry:
+    """Provide a mock backend registry with all backends."""
+    return MockBackendRegistry()
+
+
+@pytest.fixture
+def mock_llm_provider() -> MockLLMProvider:
+    """Provide a mock LLM provider with canned responses."""
+    return MockLLMProvider()
+
+
+@pytest.fixture
+def mock_data_factory() -> MockDataFactory:
+    """Provide mock data factory for quantum results."""
+    return MockDataFactory()
+
+
+@pytest.fixture
+def mock_psutil_normal():
+    """Provide mock psutil with normal resource values."""
+    with mock_psutil() as m:
+        yield m
+
+
+@pytest.fixture
+def mock_psutil_low_memory():
+    """Provide mock psutil simulating low memory scenario."""
+    with mock_psutil(create_low_memory_scenario()) as m:
+        yield m
+
+
+@pytest.fixture
+def mock_psutil_high_cpu():
+    """Provide mock psutil simulating high CPU scenario."""
+    with mock_psutil(create_high_cpu_scenario()) as m:
+        yield m
+
+
+@pytest.fixture
+def mock_psutil_low_disk():
+    """Provide mock psutil simulating low disk space scenario."""
+    with mock_psutil(create_low_disk_scenario()) as m:
+        yield m
+
+
+@pytest.fixture
+def mock_file_system_comprehensive() -> MockFileSystem:
+    """Provide comprehensive mock file system."""
+    return MockFileSystem()
+
+
+@pytest.fixture
+def mock_consent_auto_approve() -> MockConsentManager:
+    """Provide mock consent manager that auto-approves."""
+    return MockConsentManager(auto_approve=True)
+
+
+@pytest.fixture
+def mock_consent_deny() -> MockConsentManager:
+    """Provide mock consent manager that denies consent."""
+    return MockConsentManager(auto_approve=False)
+
+
+@pytest.fixture
+def mock_consent_with_sensitive_ops() -> MockConsentManager:
+    """Provide mock consent manager with sensitive operations defined."""
+    return MockConsentManager(
+        auto_approve=True,
+        require_consent_for=["send_to_remote_llm", "export_results"]
+    )
+
+
+@pytest.fixture
+def mock_pipeline_handler() -> MockPipelineHandler:
+    """Provide mock pipeline handler for testing stages."""
+    return MockPipelineHandler("test_stage")
+
+
+@pytest.fixture
+def bell_state_counts() -> Dict[str, int]:
+    """Provide Bell state measurement counts."""
+    return MockDataFactory.bell_state_counts()
+
+
+@pytest.fixture
+def ghz_state_counts() -> Dict[str, int]:
+    """Provide GHZ state measurement counts (3 qubits)."""
+    return MockDataFactory.ghz_state_counts(num_qubits=3)
+
+
+@pytest.fixture
+def random_state_vector():
+    """Provide a random normalized state vector."""
+    return MockDataFactory.state_vector(num_qubits=2)
+
+
+@pytest.fixture
+def random_density_matrix():
+    """Provide a random valid density matrix."""
+    return MockDataFactory.density_matrix(num_qubits=2)
+

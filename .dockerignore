@@ -1,0 +1,89 @@
+# Proxima Docker Ignore
+# =============================================================================
+# Files and directories to exclude from Docker build context
+# =============================================================================
+
+# Git
+.git
+.gitignore
+.github
+
+# Python artifacts
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+*.manifest
+*.spec
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+
+# Linting
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+*.whl
+site/
+
+# Documentation build
+docs/_build/
+site/
+
+# Development files
+*.md
+!README.md
+!CHANGELOG.md
+proper_implementation_steps.md
+SETUP_COMPLETE.md
+fix_stubs.py
+
+# Local configuration
+.env
+.env.local
+*.local.yaml
+
+# Test files
+tests/
+
+# Packaging templates
+packaging/
+
+# Scripts (not needed in runtime image)
+scripts/
+
+# Misc
+*.log
+*.tmp
+*.bak
+Makefile

@@ -71,6 +71,11 @@ results/
 sessions/
 logs/
 
+# Build and release
+site/
+*.whl
+*.tar.gz
+
 # OS
 .DS_Store
 Thumbs.db

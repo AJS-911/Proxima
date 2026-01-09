@@ -7,7 +7,19 @@ Note: Full interactive testing requires running the TUI manually.
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+# Check if textual is available
+try:
+    import textual
+    HAS_TEXTUAL = True
+except ImportError:
+    HAS_TEXTUAL = False
+
+# Skip all TUI tests if textual is not installed
+pytestmark = pytest.mark.skipif(not HAS_TEXTUAL, reason="textual not installed")
 
 
 def test_imports():

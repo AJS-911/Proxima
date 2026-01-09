@@ -11,6 +11,13 @@ from unittest.mock import MagicMock, patch, AsyncMock
 
 import pytest
 
+# Check if textual is available for TUI-related tests
+try:
+    import textual
+    HAS_TEXTUAL = True
+except ImportError:
+    HAS_TEXTUAL = False
+
 
 # =============================================================================
 # BACKEND ADAPTER TESTS
@@ -100,6 +107,7 @@ class TestBackendStatus:
     """Tests for backend status handling."""
     
     @pytest.mark.backend
+    @pytest.mark.skipif(not HAS_TEXTUAL, reason="textual not installed")
     def test_backend_status_connected(self):
         """Test connected status."""
         from proxima.tui.widgets import BackendStatus
@@ -107,6 +115,7 @@ class TestBackendStatus:
         assert BackendStatus.CONNECTED.value == "connected"
     
     @pytest.mark.backend
+    @pytest.mark.skipif(not HAS_TEXTUAL, reason="textual not installed")
     def test_backend_status_disconnected(self):
         """Test disconnected status."""
         from proxima.tui.widgets import BackendStatus
@@ -114,6 +123,7 @@ class TestBackendStatus:
         assert BackendStatus.DISCONNECTED.value == "disconnected"
     
     @pytest.mark.backend
+    @pytest.mark.skipif(not HAS_TEXTUAL, reason="textual not installed")
     def test_backend_status_error(self):
         """Test error status."""
         from proxima.tui.widgets import BackendStatus
@@ -121,6 +131,7 @@ class TestBackendStatus:
         assert BackendStatus.ERROR.value == "error"
     
     @pytest.mark.backend
+    @pytest.mark.skipif(not HAS_TEXTUAL, reason="textual not installed")
     def test_backend_status_checking(self):
         """Test checking status."""
         from proxima.tui.widgets import BackendStatus
@@ -136,6 +147,7 @@ class TestBackendInfo:
     """Tests for BackendInfo data class."""
     
     @pytest.mark.backend
+    @pytest.mark.skipif(not HAS_TEXTUAL, reason="textual not installed")
     def test_backend_info_creation(self):
         """Test BackendInfo creation."""
         from proxima.tui.widgets import BackendInfo, BackendStatus
@@ -155,6 +167,7 @@ class TestBackendInfo:
         assert info.total_executions == 100
     
     @pytest.mark.backend
+    @pytest.mark.skipif(not HAS_TEXTUAL, reason="textual not installed")
     def test_backend_info_default_values(self):
         """Test BackendInfo default values."""
         from proxima.tui.widgets import BackendInfo, BackendStatus
@@ -177,6 +190,7 @@ class TestBackendCardWidget:
     """Tests for BackendCard widget."""
     
     @pytest.mark.backend
+    @pytest.mark.skipif(not HAS_TEXTUAL, reason="textual not installed")
     def test_backend_card_creation(self):
         """Test BackendCard creation."""
         from proxima.tui.widgets import BackendCard, BackendInfo, BackendStatus

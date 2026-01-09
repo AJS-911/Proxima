@@ -1,27 +1,46 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=68.0", "wheel", "build"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "proxima"
+name = "proxima-agent"
 version = "0.1.0"
 description = "Intelligent Quantum Simulation Orchestration Framework"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "Proxima Team"}
+    {name = "Proxima Team", email = "team@proxima-project.io"}
 ]
-keywords = ["quantum", "simulation", "orchestration", "quantum-computing"]
+maintainers = [
+    {name = "Proxima Team", email = "team@proxima-project.io"}
+]
+keywords = [
+    "quantum",
+    "simulation",
+    "orchestration",
+    "quantum-computing",
+    "cirq",
+    "qiskit",
+    "lret",
+    "quantum-simulation",
+    "cli",
+    "agent"
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
 ]
 
 dependencies = [
@@ -103,9 +122,28 @@ Homepage = "https://github.com/proxima-project/proxima"
 Documentation = "https://proxima.readthedocs.io"
 Repository = "https://github.com/proxima-project/proxima"
 Issues = "https://github.com/proxima-project/proxima/issues"
+Changelog = "https://github.com/proxima-project/proxima/blob/main/CHANGELOG.md"
+
+[project.entry-points."proxima.backends"]
+cirq = "proxima.backends.cirq_adapter:CirqBackendAdapter"
+qiskit = "proxima.backends.qiskit_adapter:QiskitBackendAdapter"
+lret = "proxima.backends.lret:LRETBackendAdapter"
+
+[tool.setuptools]
+include-package-data = true
+zip-safe = false
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["proxima*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+proxima = [
+    "py.typed",
+    "configs/*.yaml",
+    "resources/*.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -117,6 +155,16 @@ addopts = [
     "--cov=proxima",
     "--cov-report=term-missing",
     "--cov-report=html",
+    "--cov-fail-under=75",
+]
+markers = [
+    "unit: Unit tests (fast, isolated)",
+    "integration: Integration tests (component interaction)",
+    "e2e: End-to-end tests (full workflows)",
+    "backend: Backend adapter tests",
+    "performance: Performance/benchmark tests",
+    "slow: Slow tests (may take > 1s)",
+    "requires_network: Tests requiring network access",
 ]
 
 [tool.black]

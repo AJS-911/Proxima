@@ -10,6 +10,10 @@ from proxima.cli.commands import config as config_commands
 from proxima.cli.commands import run as run_commands
 from proxima.cli.commands import backends as backends_commands
 from proxima.cli.commands import compare as compare_commands
+from proxima.cli.commands import history as history_commands
+from proxima.cli.commands import session as session_commands
+from proxima.cli.commands import agent as agent_commands
+from proxima.cli.commands import ui as ui_commands
 from proxima.config.settings import config_service
 from proxima.cli import utils as cli_utils
 from proxima.utils.logging import configure_from_settings
@@ -98,6 +102,10 @@ app.add_typer(config_commands.app, name="config")
 app.add_typer(run_commands.app, name="run")
 app.add_typer(backends_commands.app, name="backends")
 app.add_typer(compare_commands.app, name="compare")
+app.add_typer(history_commands.app, name="history")
+app.add_typer(session_commands.app, name="session")
+app.add_typer(agent_commands.app, name="agent")
+app.add_typer(ui_commands.app, name="ui")
 
 if __name__ == "__main__":
     app()

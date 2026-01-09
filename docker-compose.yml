@@ -1,0 +1,153 @@
+# =============================================================================
+# Proxima Agent - Docker Compose Configuration
+# Intelligent Quantum Simulation Orchestration Framework
+# =============================================================================
+
+version: "3.9"
+
+services:
+  # -------------------------------------------------------------------------
+  # Main Proxima Service
+  # -------------------------------------------------------------------------
+  proxima:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        PROXIMA_VERSION: "0.1.0"
+    image: proxima-agent:latest
+    container_name: proxima-agent
+    hostname: proxima
+    restart: unless-stopped
+    
+    # Environment configuration
+    environment:
+      - PROXIMA_LOG_LEVEL=${PROXIMA_LOG_LEVEL:-info}
+      - PROXIMA_OUTPUT_FORMAT=${PROXIMA_OUTPUT_FORMAT:-rich}
+      - PROXIMA_LLM_PROVIDER=${PROXIMA_LLM_PROVIDER:-none}
+      # API Keys (loaded from .env file)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    
+    # Volume mounts
+    volumes:
+      # Configuration persistence
+      - proxima-config:/home/proxima/.proxima
+      # Data and results persistence
+      - proxima-data:/app/data
+      # Optional: mount local configs
+      - ./configs:/app/configs:ro
+      # Optional: mount for results export
+      - ./exports:/app/exports
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 8G
+        reservations:
+          cpus: "1.0"
+          memory: 2G
+    
+    # Network configuration
+    networks:
+      - proxima-network
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    
+    # Default command (override with docker-compose run)
+    command: ["--help"]
+
+  # -------------------------------------------------------------------------
+  # Development Service (with additional tools)
+  # -------------------------------------------------------------------------
+  proxima-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    image: proxima-agent:dev
+    container_name: proxima-dev
+    hostname: proxima-dev
+    profiles:
+      - dev
+    
+    environment:
+      - PROXIMA_LOG_LEVEL=debug
+      - PROXIMA_OUTPUT_FORMAT=rich
+    
+    volumes:
+      # Mount source code for live development
+      - ./src:/app/src:rw
+      - ./tests:/app/tests:rw
+      - ./configs:/app/configs:rw
+      - proxima-config:/home/proxima/.proxima
+    
+    working_dir: /app
+    
+    networks:
+      - proxima-network
+    
+    # Keep container running for interactive use
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
+  # -------------------------------------------------------------------------
+  # Ollama Service (for local LLM inference)
+  # -------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: proxima-ollama
+    hostname: ollama
+    profiles:
+      - llm
+    restart: unless-stopped
+    
+    volumes:
+      - ollama-data:/root/.ollama
+    
+    # GPU support (uncomment for NVIDIA GPU)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    
+    ports:
+      - "11434:11434"
+    
+    networks:
+      - proxima-network
+    
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  proxima-network:
+    driver: bridge
+    name: proxima-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  proxima-config:
+    name: proxima-config
+  proxima-data:
+    name: proxima-data
+  ollama-data:
+    name: proxima-ollama-data

@@ -189,7 +189,7 @@ class InsightEngine:
 
     def _ascii_histogram(self, counts: Dict[str, int], width: int = 40) -> str:
         if not counts:
-            return """
+            return "(No data to display)"
         max_val = max(counts.values())
         lines = ["Histogram:"]
         for state, cnt in sorted(counts.items(), key=lambda x: -x[1]):

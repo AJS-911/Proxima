@@ -1,0 +1,52 @@
+# Include essential project files
+include LICENSE
+include README.md
+include CHANGELOG.md
+include pyproject.toml
+include pytest.ini
+include mkdocs.yml
+
+# Include configuration files
+include configs/*.yaml
+recursive-include configs *.yaml *.yml
+
+# Include documentation
+recursive-include docs *.md *.rst *.txt
+
+# Include source type hints
+include src/proxima/py.typed
+
+# Include package data
+recursive-include src/proxima *.yaml *.yml *.json *.md
+
+# Exclude development and build files
+exclude .gitignore
+exclude .env
+exclude .env.example
+exclude fix_stubs.py
+exclude proper_implementation_steps.md
+exclude SETUP_COMPLETE.md
+
+# Exclude cache and build directories
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude *.egg-info
+global-exclude .git
+global-exclude .github
+global-exclude .pytest_cache
+global-exclude .mypy_cache
+global-exclude .ruff_cache
+global-exclude .coverage
+global-exclude htmlcov
+global-exclude dist
+global-exclude build
+
+# Exclude test files from distribution (can be included if needed)
+prune tests
+prune .git
+prune .github
+prune htmlcov
+prune .pytest_cache
+prune .mypy_cache
+prune .ruff_cache

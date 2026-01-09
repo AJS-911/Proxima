@@ -21,10 +21,23 @@ from proxima.backends.registry import backend_registry
 
 @dataclass
 class SelectionInput:
+	"""Input for backend selection with circuit characteristics.
+	
+	Implements the circuit characteristic extraction from Step 3.3:
+	- qubit_count: Number of qubits in the circuit
+	- gate_types: List of gate types used (e.g., ["H", "CNOT", "RZ"])
+	- circuit_depth: Depth of the quantum circuit
+	- has_measurements: Whether the circuit includes measurements
+	- needs_noise: Whether noise simulation is required
+	"""
 	qubit_count: int
 	needs_noise: bool = False
 	simulator_type: Optional[SimulatorType] = None
 	preferred_backend: Optional[str] = None
+	# Extended circuit characteristics per Step 3.3
+	gate_types: List[str] = field(default_factory=list)
+	circuit_depth: int = 0
+	has_measurements: bool = False
 	circuit_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
