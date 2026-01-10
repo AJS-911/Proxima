@@ -864,10 +864,10 @@ class TestConfigWatcher:
             watcher = ConfigWatcher()
             watcher.add_config(config_path)
 
-            assert config_path in watcher.watched_paths
+            assert config_path.resolve() in watcher.watched_paths
 
             watcher.remove_config(config_path)
-            assert config_path not in watcher.watched_paths
+            assert config_path.resolve() not in watcher.watched_paths
 
 
 # =============================================================================

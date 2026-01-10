@@ -654,7 +654,9 @@ class DefaultTaskExecutor:
         if backend_name == "auto" or not backend_name:
             selector = BackendSelector()
             qubit_count = getattr(circuit, "num_qubits", 4)
-            selection = selector.select_from_characteristics(CircuitCharacteristics(qubit_count=qubit_count, gate_count=0, depth=0))
+            selection = selector.select_from_characteristics(
+                CircuitCharacteristics(qubit_count=qubit_count, gate_count=0, depth=0)
+            )
             backend_name = selection.backend
 
         # Get adapter and execute

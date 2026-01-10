@@ -410,7 +410,6 @@ class StepProgress:
                 self.steps.append(s)
         self.console: Console | None = None
 
-
         if RICH_AVAILABLE:
             self.console = Console()
             self._live: Live | None = None

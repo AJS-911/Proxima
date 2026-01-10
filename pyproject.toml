@@ -233,6 +233,7 @@ module = [
     "proxima.cli.workflows",
     "proxima.cli.commands.compare",
     "proxima.backends.lret",
+    "proxima.backends.conversion",
     "proxima.resources.audit",
     "proxima.data.export",
     "proxima.plugins.*",
