@@ -134,11 +134,11 @@ class TestBackendStatus:
 
     @pytest.mark.backend
     @pytest.mark.skipif(not HAS_TEXTUAL, reason="textual not installed")
-    def test_backend_status_checking(self):
-        """Test checking status."""
+    def test_backend_status_connecting(self):
+        """Test connecting status."""
         from proxima.tui.widgets import BackendStatus
 
-        assert BackendStatus.CHECKING.value == "checking"
+        assert BackendStatus.CONNECTING.value == "connecting"
 
 
 # =============================================================================
@@ -182,7 +182,7 @@ class TestBackendInfo:
         )
 
         assert info.total_executions == 0
-        assert info.avg_latency_ms == 0.0
+        assert info.avg_latency_ms is None  # None when no executions yet
 
 
 # =============================================================================
@@ -205,10 +205,10 @@ class TestBackendCardWidget:
             status=BackendStatus.CONNECTED,
         )
 
-        card = BackendCard(info)
+        card = BackendCard(backend=info)
 
-        assert card.backend == info
-        assert card.backend.name == "Card Test"
+        assert card._backend == info
+        assert card._backend.name == "Card Test"
 
 
 # =============================================================================

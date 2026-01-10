@@ -19,6 +19,11 @@ from .export import (
     # Exporter classes
     BaseExporter,
     CSVExporter,
+    HTMLExporter,
+    JSONExporter,
+    MarkdownExporter,
+    XLSXExporter,
+    YAMLExporter,
     # Main engine
     ExportEngine,
     # Enums
@@ -26,15 +31,15 @@ from .export import (
     # Data classes
     ExportOptions,
     ExportResult,
-    HTMLExporter,
-    JSONExporter,
     ReportData,
-    XLSXExporter,
+    # Convenience functions
     export_to_csv,
     export_to_html,
-    # Convenience functions
     export_to_json,
+    export_to_markdown,
+    export_to_string,
     export_to_xlsx,
+    export_to_yaml,
 )
 
 __all__ = [
@@ -65,6 +70,8 @@ __all__ = [
     "CSVExporter",
     "XLSXExporter",
     "HTMLExporter",
+    "MarkdownExporter",
+    "YAMLExporter",
     # Main engine
     "ExportEngine",
     # Convenience functions
@@ -72,4 +79,7 @@ __all__ = [
     "export_to_csv",
     "export_to_xlsx",
     "export_to_html",
+    "export_to_markdown",
+    "export_to_yaml",
+    "export_to_string",
 ]

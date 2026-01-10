@@ -1,4 +1,4 @@
-"""Qiskit backend adapter for Statevector and DensityMatrix simulation."""
+"""Qiskit backend adapter for Statevector and DensityMatrix simulation with edge cases."""
 
 from __future__ import annotations
 
@@ -14,6 +14,13 @@ from proxima.backends.base import (
     ResultType,
     SimulatorType,
     ValidationResult,
+)
+from proxima.backends.exceptions import (
+    BackendNotInstalledError,
+    CircuitValidationError,
+    ExecutionError,
+    QubitLimitExceededError,
+    wrap_backend_exception,
 )
 
 
@@ -91,12 +98,40 @@ class QiskitBackendAdapter(BaseBackendAdapter):
 
     def execute(self, circuit: Any, options: dict[str, Any] | None = None) -> ExecutionResult:
         if not self.is_available():
-            raise RuntimeError("qiskit/qiskit-aer is not installed")
-        from qiskit import QuantumCircuit, transpile
-        from qiskit_aer import AerSimulator
+            raise BackendNotInstalledError("qiskit", ["qiskit", "qiskit-aer"])
+
+        # Validate circuit first
+        validation = self.validate_circuit(circuit)
+        if not validation.valid:
+            raise CircuitValidationError(
+                backend_name="qiskit",
+                reason=validation.message or "Invalid circuit",
+            )
+
+        try:
+            from qiskit import QuantumCircuit, transpile
+            from qiskit_aer import AerSimulator
+        except ImportError as exc:
+            raise BackendNotInstalledError(
+                "qiskit", ["qiskit", "qiskit-aer"], original_exception=exc
+            )
 
         if not isinstance(circuit, QuantumCircuit):
-            raise TypeError("Expected qiskit.QuantumCircuit")
+            raise CircuitValidationError(
+                backend_name="qiskit",
+                reason="Expected qiskit.QuantumCircuit",
+                circuit_info={"type": type(circuit).__name__},
+            )
+
+        # Check qubit limits
+        qubit_count = circuit.num_qubits
+        max_qubits = self.get_capabilities().max_qubits
+        if qubit_count > max_qubits:
+            raise QubitLimitExceededError(
+                backend_name="qiskit",
+                requested_qubits=qubit_count,
+                max_qubits=max_qubits,
+            )
 
         options = options or {}
         sim_type = options.get("simulator_type", SimulatorType.STATE_VECTOR)
@@ -106,52 +141,56 @@ class QiskitBackendAdapter(BaseBackendAdapter):
         if sim_type not in (SimulatorType.STATE_VECTOR, SimulatorType.DENSITY_MATRIX):
             raise ValueError(f"Unsupported simulator type: {sim_type}")
 
-        method = "density_matrix" if density_mode else "statevector"
-        simulator = AerSimulator(method=method)
-        t_circuit = transpile(circuit, simulator)
+        try:
+            method = "density_matrix" if density_mode else "statevector"
+            simulator = AerSimulator(method=method)
+            t_circuit = transpile(circuit, simulator)
 
-        # Clone circuit to add save instruction for non-shot execution
-        exec_circuit = t_circuit.copy()
-        if shots == 0:
-            if density_mode:
-                exec_circuit.save_density_matrix()
-            else:
-                exec_circuit.save_statevector()
+            exec_circuit = t_circuit.copy()
+            if shots == 0:
+                if density_mode:
+                    exec_circuit.save_density_matrix()
+                else:
+                    exec_circuit.save_statevector()
 
-        start = time.perf_counter()
-        result = simulator.run(exec_circuit, shots=shots if shots > 0 else None).result()
-        execution_time_ms = (time.perf_counter() - start) * 1000.0
+            start = time.perf_counter()
+            result = simulator.run(exec_circuit, shots=shots if shots > 0 else None).result()
+            execution_time_ms = (time.perf_counter() - start) * 1000.0
 
-        if shots > 0:
-            counts = result.get_counts(exec_circuit)
-            data = {"counts": counts, "shots": shots}
-            result_type = ResultType.COUNTS
-            raw_result = result
-        else:
-            result_data = result.data(exec_circuit)
-            if density_mode:
-                density_matrix = result_data.get("density_matrix")
-                result_type = ResultType.DENSITY_MATRIX
-                data = {"density_matrix": density_matrix}
+            if shots > 0:
+                counts = result.get_counts(exec_circuit)
+                data = {"counts": counts, "shots": shots}
+                result_type = ResultType.COUNTS
                 raw_result = result
             else:
-                statevector = result_data.get("statevector")
-                result_type = ResultType.STATEVECTOR
-                data = {"statevector": statevector}
-                raw_result = result
+                result_data = result.data(exec_circuit)
+                if density_mode:
+                    density_matrix = result_data.get("density_matrix")
+                    result_type = ResultType.DENSITY_MATRIX
+                    data = {"density_matrix": density_matrix}
+                    raw_result = result
+                else:
+                    statevector = result_data.get("statevector")
+                    result_type = ResultType.STATEVECTOR
+                    data = {"statevector": statevector}
+                    raw_result = result
 
-        qubit_count = circuit.num_qubits
-        return ExecutionResult(
-            backend=self.get_name(),
-            simulator_type=sim_type,
-            execution_time_ms=execution_time_ms,
-            qubit_count=qubit_count,
-            shot_count=shots if shots > 0 else None,
-            result_type=result_type,
-            data=data,
-            metadata={},
-            raw_result=raw_result,
-        )
+            return ExecutionResult(
+                backend=self.get_name(),
+                simulator_type=sim_type,
+                execution_time_ms=execution_time_ms,
+                qubit_count=qubit_count,
+                shot_count=shots if shots > 0 else None,
+                result_type=result_type,
+                data=data,
+                metadata={"qiskit_version": self.get_version()},
+                raw_result=raw_result,
+            )
+
+        except (BackendNotInstalledError, CircuitValidationError, QubitLimitExceededError):
+            raise
+        except Exception as exc:
+            raise wrap_backend_exception(exc, "qiskit", "execution")
 
     def supports_simulator(self, sim_type: SimulatorType) -> bool:
         return sim_type in self.get_capabilities().simulator_types

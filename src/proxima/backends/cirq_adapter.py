@@ -1,4 +1,4 @@
-"""Cirq backend adapter (DensityMatrix + StateVector)."""
+"""Cirq backend adapter (DensityMatrix + StateVector) with comprehensive error handling."""
 
 from __future__ import annotations
 
@@ -14,6 +14,13 @@ from proxima.backends.base import (
     ResultType,
     SimulatorType,
     ValidationResult,
+)
+from proxima.backends.exceptions import (
+    BackendNotInstalledError,
+    CircuitValidationError,
+    ExecutionError,
+    QubitLimitExceededError,
+    wrap_backend_exception,
 )
 
 
@@ -88,68 +95,93 @@ class CirqBackendAdapter(BaseBackendAdapter):
 
     def execute(self, circuit: Any, options: dict[str, Any] | None = None) -> ExecutionResult:
         if not self.is_available():
-            raise RuntimeError("cirq is not installed")
-        import cirq
+            raise BackendNotInstalledError("cirq", ["cirq"])
+
+        # Validate circuit first
+        validation = self.validate_circuit(circuit)
+        if not validation.valid:
+            raise CircuitValidationError(
+                backend_name="cirq",
+                reason=validation.message or "Invalid circuit",
+            )
+
+        try:
+            import cirq
+        except ImportError as exc:
+            raise BackendNotInstalledError("cirq", ["cirq"], original_exception=exc)
 
         options = options or {}
         sim_type = options.get("simulator_type", SimulatorType.STATE_VECTOR)
         repetitions = int(options.get("repetitions", options.get("shots", 0)))
+
+        # Check qubit limits
+        qubit_count = len(circuit.all_qubits()) if hasattr(circuit, "all_qubits") else 0
+        max_qubits = self.get_capabilities().max_qubits
+        if qubit_count > max_qubits:
+            raise QubitLimitExceededError(
+                backend_name="cirq",
+                requested_qubits=qubit_count,
+                max_qubits=max_qubits,
+            )
+
         if sim_type not in (SimulatorType.STATE_VECTOR, SimulatorType.DENSITY_MATRIX):
             raise ValueError(f"Unsupported simulator type: {sim_type}")
 
-        simulator: Any
-        if sim_type == SimulatorType.DENSITY_MATRIX:
-            simulator = cirq.DensityMatrixSimulator()
-        else:
-            simulator = cirq.Simulator()
-
-        start = time.perf_counter()
-        result_type: ResultType
-        data: dict[str, Any]
-        raw_result: Any
-
-        if repetitions > 0:
-            raw_result = simulator.run(circuit, repetitions=repetitions)
-            result_type = ResultType.COUNTS
-            counts: dict[str, int] = {}
-            # Extract measurement keys and aggregate counts
-            measurement_keys = list(raw_result.measurements.keys())
-            if measurement_keys:
-                # Use histogram for each measurement key and combine
-                for key in measurement_keys:
-                    histogram = raw_result.histogram(key=key)
-                    for state_int, count in histogram.items():
-                        # Convert integer state to bitstring
-                        n_bits = raw_result.measurements[key].shape[1]
-                        bitstring = format(state_int, f"0{n_bits}b")
-                        counts[bitstring] = counts.get(bitstring, 0) + count
-            data = {"counts": counts, "repetitions": repetitions}
-        else:
+        try:
+            simulator: Any
             if sim_type == SimulatorType.DENSITY_MATRIX:
-                raw_result = simulator.simulate(circuit)
-                density_matrix = raw_result.final_density_matrix
-                result_type = ResultType.DENSITY_MATRIX
-                data = {"density_matrix": density_matrix}
+                simulator = cirq.DensityMatrixSimulator()
             else:
-                raw_result = simulator.simulate(circuit)
-                statevector = raw_result.final_state_vector
-                result_type = ResultType.STATEVECTOR
-                data = {"statevector": statevector}
+                simulator = cirq.Simulator()
 
-        execution_time_ms = (time.perf_counter() - start) * 1000.0
-        qubit_count = len(circuit.all_qubits()) if hasattr(circuit, "all_qubits") else 0
+            start = time.perf_counter()
+            result_type: ResultType
+            data: dict[str, Any]
+            raw_result: Any
 
-        return ExecutionResult(
-            backend=self.get_name(),
-            simulator_type=sim_type,
-            execution_time_ms=execution_time_ms,
-            qubit_count=qubit_count,
-            shot_count=repetitions if repetitions > 0 else None,
-            result_type=result_type,
-            data=data,
-            metadata={},
-            raw_result=raw_result,
-        )
+            if repetitions > 0:
+                raw_result = simulator.run(circuit, repetitions=repetitions)
+                result_type = ResultType.COUNTS
+                counts: dict[str, int] = {}
+                measurement_keys = list(raw_result.measurements.keys())
+                if measurement_keys:
+                    for key in measurement_keys:
+                        histogram = raw_result.histogram(key=key)
+                        for state_int, count in histogram.items():
+                            n_bits = raw_result.measurements[key].shape[1]
+                            bitstring = format(state_int, f"0{n_bits}b")
+                            counts[bitstring] = counts.get(bitstring, 0) + count
+                data = {"counts": counts, "repetitions": repetitions}
+            else:
+                if sim_type == SimulatorType.DENSITY_MATRIX:
+                    raw_result = simulator.simulate(circuit)
+                    density_matrix = raw_result.final_density_matrix
+                    result_type = ResultType.DENSITY_MATRIX
+                    data = {"density_matrix": density_matrix}
+                else:
+                    raw_result = simulator.simulate(circuit)
+                    statevector = raw_result.final_state_vector
+                    result_type = ResultType.STATEVECTOR
+                    data = {"statevector": statevector}
+
+            execution_time_ms = (time.perf_counter() - start) * 1000.0
+
+            return ExecutionResult(
+                backend=self.get_name(),
+                simulator_type=sim_type,
+                execution_time_ms=execution_time_ms,
+                qubit_count=qubit_count,
+                shot_count=repetitions if repetitions > 0 else None,
+                result_type=result_type,
+                data=data,
+                metadata={"cirq_version": self.get_version()},
+                raw_result=raw_result,
+            )
+
+        except (BackendNotInstalledError, CircuitValidationError, QubitLimitExceededError):
+            raise
+        except Exception as exc:
+            raise wrap_backend_exception(exc, "cirq", "execution")
 
     def supports_simulator(self, sim_type: SimulatorType) -> bool:
         return sim_type in self.get_capabilities().simulator_types
