@@ -58,6 +58,7 @@ class ExecutionStateMachine:
         self.execution_id = execution_id
         self.logger = get_logger("state").bind(execution_id=execution_id)
         self.history: list[str] = []
+        self.state: str = ExecutionState.IDLE.value  # Set by transitions.Machine
 
         self._machine = Machine(
             model=self,

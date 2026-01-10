@@ -180,6 +180,11 @@ class SelectionResult:
     alternatives: list[str] = field(default_factory=list)  # Other good options
     llm_recommendation: str | None = None  # If LLM was used
 
+    @property
+    def backend(self) -> str:
+        """Alias for selected_backend for backwards compatibility."""
+        return self.selected_backend
+
 
 # =============================================================================
 # Backend Registry
@@ -869,3 +874,7 @@ def select_backend(
 def analyze_circuit(circuit: Circuit) -> CircuitCharacteristics:
     """Analyze a circuit and return its characteristics."""
     return CircuitCharacteristics.from_circuit(circuit)
+
+
+# Backwards compatibility alias
+SelectionInput = CircuitCharacteristics

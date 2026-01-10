@@ -228,6 +228,12 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = [
     "proxima.tui.*",
+    "proxima.cli.formatters",
+    "proxima.cli.progress",
+    "proxima.cli.workflows",
+    "proxima.cli.commands.compare",
+    "proxima.backends.lret",
+    "proxima.resources.audit",
     "proxima.data.export",
     "proxima.plugins.*",
 ]

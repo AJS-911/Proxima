@@ -641,7 +641,7 @@ class DefaultTaskExecutor:
     def _execute_circuit(self, task: TaskDefinition, context: dict[str, Any]) -> Any:
         """Execute a circuit execution task using the backend system."""
         from proxima.backends.registry import backend_registry
-        from proxima.intelligence.selector import BackendSelector, SelectionInput
+        from proxima.intelligence.selector import BackendSelector, CircuitCharacteristics
 
         params = task.parameters
         circuit = params.get("circuit")
@@ -654,7 +654,7 @@ class DefaultTaskExecutor:
         if backend_name == "auto" or not backend_name:
             selector = BackendSelector()
             qubit_count = getattr(circuit, "num_qubits", 4)
-            selection = selector.select(SelectionInput(qubit_count=qubit_count))
+            selection = selector.select_from_characteristics(CircuitCharacteristics(qubit_count=qubit_count, gate_count=0, depth=0))
             backend_name = selection.backend
 
         # Get adapter and execute

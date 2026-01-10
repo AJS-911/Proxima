@@ -318,9 +318,9 @@ class RunWorkflow(WorkflowRunner[dict[str, Any]]):
     def _check_resources(self, **kwargs) -> bool:
         """Check memory and resources."""
         # Simple resource check
-        memory_check = self.context.resource_monitor.memory_monitor.check_memory()
+        memory_check = self.context.resource_monitor.memory.sample()
         if memory_check.level.name in ("CRITICAL",):
-            typer.echo(f"Critical memory level: {memory_check.percentage:.1f}% used")
+            typer.echo(f"Critical memory level: {memory_check.percent_used:.1f}% used")
             if not self.context.force:
                 return False
         return True

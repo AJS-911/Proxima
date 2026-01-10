@@ -408,6 +408,8 @@ class StepProgress:
                 self.steps.append(Step(name=s))
             else:
                 self.steps.append(s)
+        self.console: Console | None = None
+
 
         if RICH_AVAILABLE:
             self.console = Console()

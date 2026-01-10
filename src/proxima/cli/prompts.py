@@ -45,8 +45,11 @@ class PromptResult(Enum):
     DEFAULT = auto()
 
 
+T = TypeVar("T")
+
+
 @dataclass
-class PromptResponse(Generic[TypeVar("T")]):
+class PromptResponse(Generic[T]):
     """Response from a prompt."""
 
     value: Any
@@ -63,9 +66,6 @@ class PromptResponse(Generic[TypeVar("T")]):
 
 
 # ========== Base Prompt ==========
-
-
-T = TypeVar("T")
 
 
 class Prompt(ABC, Generic[T]):
