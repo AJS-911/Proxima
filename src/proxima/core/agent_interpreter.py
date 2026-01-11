@@ -622,15 +622,119 @@ class DefaultTaskExecutor:
 
     Integrates with the backend system, comparison engine, and export facilities
     to provide fully functional task execution.
+
+    Supports configurable defaults for execution parameters and retry logic
+    for improved error recovery.
     """
 
-    def __init__(self) -> None:
+    # Default configuration - can be overridden via set_defaults()
+    DEFAULT_SHOTS = 1024
+    DEFAULT_TIMEOUT_SECONDS = 300
+    DEFAULT_RETRY_COUNT = 3
+    DEFAULT_RETRY_DELAY_SECONDS = 1.0
+    DEFAULT_BACKEND = "auto"
+    DEFAULT_EXPORT_FORMAT = "json"
+    MAX_SCRIPT_SIZE_BYTES = 10240  # 10KB max script size
+    SCRIPT_EXECUTION_TIMEOUT = 30  # 30 seconds max script execution
+
+    def __init__(
+        self,
+        default_shots: int | None = None,
+        default_backend: str | None = None,
+        default_timeout: int | None = None,
+        retry_count: int | None = None,
+        retry_delay: float | None = None,
+        enable_script_execution: bool = True,
+    ) -> None:
+        """Initialize task executor with configurable defaults.
+
+        Args:
+            default_shots: Default number of shots for circuit execution.
+            default_backend: Default backend to use (or 'auto').
+            default_timeout: Default timeout in seconds.
+            retry_count: Number of retries on failure.
+            retry_delay: Delay between retries in seconds.
+            enable_script_execution: Whether to allow script execution in custom tasks.
+        """
+        self._default_shots = default_shots or self.DEFAULT_SHOTS
+        self._default_backend = default_backend or self.DEFAULT_BACKEND
+        self._default_timeout = default_timeout or self.DEFAULT_TIMEOUT_SECONDS
+        self._retry_count = retry_count if retry_count is not None else self.DEFAULT_RETRY_COUNT
+        self._retry_delay = retry_delay if retry_delay is not None else self.DEFAULT_RETRY_DELAY_SECONDS
+        self._enable_script_execution = enable_script_execution
+
         self._handlers: dict[TaskType, Callable] = {
             TaskType.CIRCUIT_EXECUTION: self._execute_circuit,
             TaskType.BACKEND_COMPARISON: self._execute_comparison,
             TaskType.RESULT_ANALYSIS: self._execute_analysis,
             TaskType.EXPORT: self._execute_export,
             TaskType.CUSTOM: self._execute_custom,
+        }
+
+    def set_defaults(
+        self,
+        shots: int | None = None,
+        backend: str | None = None,
+        timeout: int | None = None,
+        retry_count: int | None = None,
+        retry_delay: float | None = None,
+    ) -> None:
+        """Update default configuration.
+
+        Args:
+            shots: Default number of shots.
+            backend: Default backend name.
+            timeout: Default timeout in seconds.
+            retry_count: Number of retries on failure.
+            retry_delay: Delay between retries in seconds.
+        """
+        if shots is not None:
+            self._default_shots = shots
+        if backend is not None:
+            self._default_backend = backend
+        if timeout is not None:
+            self._default_timeout = timeout
+        if retry_count is not None:
+            self._retry_count = retry_count
+        if retry_delay is not None:
+            self._retry_delay = retry_delay
+
+    def _with_retry(
+        self,
+        func: Callable,
+        task: TaskDefinition,
+        context: dict[str, Any],
+        task_type: str,
+    ) -> Any:
+        """Execute a function with retry logic.
+
+        Args:
+            func: Function to execute.
+            task: Task definition.
+            context: Execution context.
+            task_type: Type name for error reporting.
+
+        Returns:
+            Execution result.
+        """
+        last_error = None
+        for attempt in range(self._retry_count):
+            try:
+                return func(task, context)
+            except Exception as e:
+                last_error = e
+                if attempt < self._retry_count - 1:
+                    import time
+                    time.sleep(self._retry_delay)
+                    continue
+
+        # All retries failed
+        return {
+            "task_type": task_type,
+            "success": False,
+            "error": f"Failed after {self._retry_count} attempts: {last_error}",
+            "last_exception": str(last_error),
+            "attempts": self._retry_count,
         }
 
     def execute(self, task: TaskDefinition, context: dict[str, Any]) -> Any:
@@ -645,8 +749,8 @@ class DefaultTaskExecutor:
 
         params = task.parameters
         circuit = params.get("circuit")
-        backend_name = params.get("backend", "auto")
-        shots = params.get("shots", 1024)
+        backend_name = params.get("backend", self._default_backend)
+        shots = params.get("shots", self._default_shots)
         options = params.get("options", {})
         options["shots"] = shots
 
@@ -903,8 +1007,55 @@ class DefaultTaskExecutor:
 
         elif "script" in params:
             # Execute a simple script (sandboxed - only allow safe operations)
+            # Security: Validate and limit script execution
             script = params["script"]
+
+            # Security check 1: Script execution must be enabled
+            if not self._enable_script_execution:
+                result["success"] = False
+                result["error"] = "Script execution is disabled for security"
+                return result
+
+            # Security check 2: Size limit
+            if len(script.encode("utf-8")) > self.MAX_SCRIPT_SIZE_BYTES:
+                result["success"] = False
+                result["error"] = f"Script exceeds maximum size of {self.MAX_SCRIPT_SIZE_BYTES} bytes"
+                return result
+
+            # Security check 3: Dangerous pattern detection
+            dangerous_patterns = [
+                "__import__",
+                "eval(",
+                "exec(",
+                "compile(",
+                "open(",
+                "file(",
+                "input(",
+                "os.",
+                "sys.",
+                "subprocess",
+                "shutil",
+                "pathlib",
+                "importlib",
+                "__class__",
+                "__base__",
+                "__subclasses__",
+                "__globals__",
+                "__code__",
+                "__builtins__",
+            ]
+            script_lower = script.lower()
+            for pattern in dangerous_patterns:
+                if pattern.lower() in script_lower:
+                    result["success"] = False
+                    result["error"] = f"Script contains prohibited pattern: {pattern}"
+                    result["security_violation"] = True
+                    return result
+
             try:
+                import signal
+                import threading
+
                 # Create a restricted namespace for execution
                 safe_globals: dict[str, Any] = {
                     "__builtins__": {
@@ -912,8 +1063,11 @@ class DefaultTaskExecutor:
                         "str": str,
                         "int": int,
                         "float": float,
+                        "bool": bool,
                         "list": list,
                         "dict": dict,
+                        "tuple": tuple,
+                        "set": set,
                         "sum": sum,
                         "min": min,
                         "max": max,
@@ -921,14 +1075,51 @@ class DefaultTaskExecutor:
                         "enumerate": enumerate,
                         "zip": zip,
                         "sorted": sorted,
+                        "reversed": reversed,
                         "abs": abs,
                         "round": round,
+                        "pow": pow,
+                        "all": all,
+                        "any": any,
+                        "map": map,
+                        "filter": filter,
+                        "isinstance": isinstance,
+                        "type": type,
+                        "print": print,  # Allow print for debugging
+                        "True": True,
+                        "False": False,
+                        "None": None,
                     }
                 }
                 local_vars: dict[str, Any] = {"context": context}
-                exec(script, safe_globals, local_vars)  # noqa: S102
-                result["success"] = True
-                result["result"] = local_vars.get("result", "Script executed")
+
+                # Execute with timeout using threading
+                exec_exception: list[Exception] = []
+                exec_result: list[Any] = [None]
+
+                def execute_script() -> None:
+                    try:
+                        exec(script, safe_globals, local_vars)  # noqa: S102
+                        exec_result[0] = local_vars.get("result", "Script executed")
+                    except Exception as e:
+                        exec_exception.append(e)
+
+                thread = threading.Thread(target=execute_script)
+                thread.daemon = True
+                thread.start()
+                thread.join(timeout=self.SCRIPT_EXECUTION_TIMEOUT)
+
+                if thread.is_alive():
+                    result["success"] = False
+                    result["error"] = f"Script execution timed out after {self.SCRIPT_EXECUTION_TIMEOUT} seconds"
+                    result["timeout"] = True
+                elif exec_exception:
+                    result["success"] = False
+                    result["error"] = f"Script execution failed: {exec_exception[0]}"
+                else:
+                    result["success"] = True
+                    result["result"] = exec_result[0]
+
             except Exception as e:
                 result["success"] = False
                 result["error"] = f"Script execution failed: {e}"

@@ -126,6 +126,68 @@ class PipelineContext:
     stage_results: list[StageResult] = field(default_factory=list)
     current_stage: PipelineStage = PipelineStage.IDLE
 
+    # Checkpoint tracking for rollback support
+    checkpoints: dict[str, dict[str, Any]] = field(default_factory=dict)
+    last_successful_stage: PipelineStage | None = None
+    rollback_enabled: bool = True
+
+    def create_checkpoint(self, stage: PipelineStage) -> str:
+        """Create a checkpoint at the current stage.
+
+        Args:
+            stage: The stage to checkpoint.
+
+        Returns:
+            Checkpoint ID.
+        """
+        checkpoint_id = f"{self.execution_id}_{stage.name}_{time.time()}"
+        self.checkpoints[checkpoint_id] = {
+            "stage": stage.name,
+            "timestamp": time.time(),
+            "user_input": self.user_input,
+            "input_params": dict(self.input_params),
+            "plan": self.plan,
+            "selected_backends": list(self.selected_backends),
+            "resource_check_passed": self.resource_check_passed,
+            "consent_granted": self.consent_granted,
+            "backend_results": dict(self.backend_results),
+            "insights": list(self.insights),
+            "stage_results_count": len(self.stage_results),
+        }
+        self.last_successful_stage = stage
+        return checkpoint_id
+
+    def restore_checkpoint(self, checkpoint_id: str) -> bool:
+        """Restore context from a checkpoint.
+
+        Args:
+            checkpoint_id: The checkpoint to restore.
+
+        Returns:
+            True if restored successfully.
+        """
+        if checkpoint_id not in self.checkpoints:
+            return False
+
+        checkpoint = self.checkpoints[checkpoint_id]
+        self.plan = checkpoint.get("plan")
+        self.selected_backends = checkpoint.get("selected_backends", [])
+        self.resource_check_passed = checkpoint.get("resource_check_passed", False)
+        self.consent_granted = checkpoint.get("consent_granted", False)
+        # Note: We don't restore backend_results or insights to avoid data loss
+        # from partial execution - rollback is about state, not results
+        return True
+
+    def get_latest_checkpoint(self) -> str | None:
+        """Get the most recent checkpoint ID."""
+        if not self.checkpoints:
+            return None
+        return max(self.checkpoints.keys(), key=lambda k: self.checkpoints[k]["timestamp"])
+
+    def clear_checkpoints(self) -> None:
+        """Clear all checkpoints (call on successful completion)."""
+        self.checkpoints.clear()
+
     @property
     def elapsed_ms(self) -> float:
         """Get total elapsed time in milliseconds."""
@@ -785,6 +847,12 @@ class DataFlowPipeline:
         self._on_stage_start: Callable[[PipelineStage, PipelineContext], None] | None = None
         self._on_stage_complete: Callable[[StageResult, PipelineContext], None] | None = None
         self._on_pipeline_complete: Callable[[PipelineContext], None] | None = None
+        self._on_rollback: Callable[[PipelineStage, str, PipelineContext], None] | None = None
+
+        # Rollback configuration
+        self._enable_rollback = True
+        self._auto_checkpoint = True
+        self._rollback_on_failure = False  # If True, automatically rollback to last checkpoint on failure
 
     def on_stage_start(self, callback: Callable[[PipelineStage, PipelineContext], None]) -> None:
         """Register callback for stage start events."""
@@ -801,6 +869,96 @@ class DataFlowPipeline:
     def set_handler(self, stage: PipelineStage, handler: PipelineHandler) -> None:
         """Replace a stage handler."""
         self.handlers[stage] = handler
+
+    def on_rollback(
+        self, callback: Callable[[PipelineStage, str, PipelineContext], None]
+    ) -> None:
+        """Register callback for rollback events.
+
+        Args:
+            callback: Callback(failed_stage, checkpoint_id, context) for rollback events.
+        """
+        self._on_rollback = callback
+
+    def configure_rollback(
+        self,
+        enable: bool = True,
+        auto_checkpoint: bool = True,
+        rollback_on_failure: bool = False,
+    ) -> None:
+        """Configure rollback behavior.
+
+        Args:
+            enable: Enable/disable rollback support.
+            auto_checkpoint: Automatically create checkpoints after each stage.
+            rollback_on_failure: Automatically rollback to last checkpoint on failure.
+        """
+        self._enable_rollback = enable
+        self._auto_checkpoint = auto_checkpoint
+        self._rollback_on_failure = rollback_on_failure
+
+    async def rollback_to_stage(
+        self, ctx: PipelineContext, target_stage: PipelineStage
+    ) -> bool:
+        """Rollback to a specific stage checkpoint.
+
+        Args:
+            ctx: The pipeline context.
+            target_stage: The stage to rollback to.
+
+        Returns:
+            True if rollback was successful.
+        """
+        if not self._enable_rollback:
+            logger.warning("rollback_disabled")
+            return False
+
+        # Find checkpoint for target stage
+        target_checkpoint = None
+        for cp_id, cp_data in ctx.checkpoints.items():
+            if cp_data["stage"] == target_stage.name:
+                if target_checkpoint is None or cp_data["timestamp"] > ctx.checkpoints[target_checkpoint]["timestamp"]:
+                    target_checkpoint = cp_id
+
+        if not target_checkpoint:
+            logger.warning("rollback_no_checkpoint", target_stage=target_stage.name)
+            return False
+
+        # Restore checkpoint
+        if ctx.restore_checkpoint(target_checkpoint):
+            logger.info(
+                "rollback_success",
+                checkpoint_id=target_checkpoint,
+                target_stage=target_stage.name,
+            )
+            if self._on_rollback:
+                self._on_rollback(target_stage, target_checkpoint, ctx)
+            return True
+
+        return False
+
+    async def _perform_rollback_on_failure(
+        self, ctx: PipelineContext, failed_stage: PipelineStage
+    ) -> bool:
+        """Perform automatic rollback when a stage fails.
+
+        Args:
+            ctx: The pipeline context.
+            failed_stage: The stage that failed.
+
+        Returns:
+            True if rollback was performed.
+        """
+        if not self._rollback_on_failure or not ctx.last_successful_stage:
+            return False
+
+        logger.info(
+            "rollback_on_failure_triggered",
+            failed_stage=failed_stage.name,
+            rollback_to=ctx.last_successful_stage.name,
+        )
+
+        return await self.rollback_to_stage(ctx, ctx.last_successful_stage)
 
     async def run(
         self,
@@ -857,6 +1015,15 @@ class DataFlowPipeline:
                     duration_ms=result.duration_ms,
                 )
 
+                # Create checkpoint after successful stage (if enabled)
+                if result.success and self._auto_checkpoint and self._enable_rollback:
+                    checkpoint_id = ctx.create_checkpoint(stage)
+                    logger.debug(
+                        "checkpoint_created",
+                        checkpoint_id=checkpoint_id,
+                        stage=stage.name,
+                    )
+
                 # Stop on failure
                 if not result.success:
                     ctx.current_stage = PipelineStage.FAILED
@@ -866,6 +1033,18 @@ class DataFlowPipeline:
                         failed_stage=stage.name,
                         error=result.error,
                     )
+
+                    # Attempt automatic rollback if configured
+                    if self._rollback_on_failure:
+                        rollback_success = await self._perform_rollback_on_failure(ctx, stage)
+                        if rollback_success:
+                            logger.info(
+                                "rollback_completed",
+                                execution_id=ctx.execution_id,
+                                from_stage=stage.name,
+                                to_stage=ctx.last_successful_stage.name if ctx.last_successful_stage else "none",
+                            )
+
                     break
             else:
                 # All stages completed successfully
@@ -893,6 +1072,11 @@ class DataFlowPipeline:
             logger.exception("pipeline_error", execution_id=ctx.execution_id)
 
         finally:
+            # Clear checkpoints on successful completion to free memory
+            if ctx.current_stage == PipelineStage.COMPLETED:
+                ctx.clear_checkpoints()
+                logger.debug("checkpoints_cleared", execution_id=ctx.execution_id)
+
             if self._on_pipeline_complete:
                 self._on_pipeline_complete(ctx)
 

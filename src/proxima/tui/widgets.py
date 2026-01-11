@@ -271,6 +271,36 @@ class LogViewer(Static):
         """Log a critical-level message."""
         self.log(message, level="critical", component=component)
 
+    def scroll_to_end(self) -> None:
+        """Scroll the log view to the end (latest entry).
+        
+        This is a public API for external callers to ensure
+        the most recent log entries are visible.
+        """
+        try:
+            content = self.query_one("#log-content", ScrollableContainer)
+            content.scroll_end()
+        except Exception:
+            pass  # Widget not mounted yet
+
+    def clear(self) -> None:
+        """Clear all log entries. Convenience alias for action_clear_logs."""
+        self.action_clear_logs()
+
+    def get_entries(self) -> list:
+        """Return a copy of all log entries for export."""
+        return list(self._entries)
+
+    def export_to_text(self) -> str:
+        """Export all log entries to formatted text."""
+        lines = []
+        for entry in self._entries:
+            ts = entry.format_timestamp()
+            level = entry.format_level()
+            comp = f"[{entry.component}] " if entry.component else ""
+            lines.append(f"{ts} [{level}] {comp}{entry.message}")
+        return "\n".join(lines)
+
     def _render_entry(self, entry: LogEntry) -> None:
         if self._filter_level and entry.level != self._filter_level:
             return

@@ -240,20 +240,26 @@ class QuantumIntegration(ExternalIntegration):
         except ImportError:
             pass
 
-        # Check LRET (custom framework)
+        # Check LRET (custom quantum framework)
         try:
-            # LRET may not be a standard package
+            import lret  # noqa: F401
+            
             libraries["lret"] = QuantumLibraryInfo(
                 name="lret",
-                version="0.1.0",
-                simulator_types=["framework"],
-                max_qubits=20,
-                supports_noise=False,
-                supports_gpu=False,
-                is_installed=True,  # Placeholder - actual check needed
+                version=getattr(lret, "__version__", "0.1.0"),
+                simulator_types=["framework", "hybrid"],
+                max_qubits=getattr(lret, "MAX_QUBITS", 20),
+                supports_noise=getattr(lret, "SUPPORTS_NOISE", False),
+                supports_gpu=getattr(lret, "SUPPORTS_GPU", False),
+                is_installed=True,
             )
-        except Exception:
-            pass
+            logger.debug("lret_detected", version=libraries["lret"].version)
+        except ImportError:
+            # LRET not installed - this is expected in most environments
+            logger.debug("lret_not_available", reason="package not installed")
+        except Exception as e:
+            # LRET installed but failed to load
+            logger.warning("lret_load_failed", error=str(e))
 
         return libraries
 
@@ -546,6 +552,614 @@ class SystemResourceIntegration(ExternalIntegration):
         return True, "Resources sufficient for execution"
 
 
+
+
+# =============================================================================
+# STORAGE INTEGRATION
+# =============================================================================
+
+
+@dataclass
+class StorageInfo:
+    """Information about a storage backend."""
+    
+    name: str
+    storage_type: str  # "local", "s3", "gcs", "azure"
+    path_or_endpoint: str
+    is_available: bool = False
+    is_writable: bool = False
+    free_space_mb: int = 0
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "name": self.name,
+            "storage_type": self.storage_type,
+            "path_or_endpoint": self.path_or_endpoint,
+            "is_available": self.is_available,
+            "is_writable": self.is_writable,
+            "free_space_mb": self.free_space_mb,
+        }
+
+
+class StorageIntegration(ExternalIntegration):
+    """Integration with storage backends for result persistence."""
+    
+    SUPPORTED_TYPES = ["local", "s3", "gcs", "azure"]
+    
+    def __init__(self):
+        super().__init__("storage", IntegrationType.STORAGE)
+        self._backends: dict[str, StorageInfo] = {}
+        self._default_backend: str = "local"
+    
+    async def connect(self) -> bool:
+        """Discover and connect to storage backends."""
+        self._backends = await self._discover_storage()
+        self._connected = len(self._backends) > 0
+        logger.info(
+            "storage_integration_connected",
+            backends=list(self._backends.keys()),
+        )
+        return self._connected
+    
+    async def disconnect(self) -> bool:
+        """Disconnect from storage backends."""
+        self._backends = {}
+        self._connected = False
+        return True
+    
+    async def health_check(self) -> IntegrationHealth:
+        """Check storage backend availability."""
+        available = [k for k, v in self._backends.items() if v.is_available]
+        
+        if not available:
+            return IntegrationHealth(
+                name=self.name,
+                integration_type=self.integration_type,
+                status=IntegrationStatus.UNAVAILABLE,
+                message="No storage backends available",
+            )
+        
+        return IntegrationHealth(
+            name=self.name,
+            integration_type=self.integration_type,
+            status=IntegrationStatus.AVAILABLE,
+            message=f"{len(available)} storage backends available",
+            capabilities=available,
+            metadata={"backends": {k: v.to_dict() for k, v in self._backends.items()}},
+        )
+    
+    async def _discover_storage(self) -> dict[str, StorageInfo]:
+        """Discover available storage backends."""
+        backends = {}
+        
+        # Local filesystem storage (always available)
+        import os
+        local_path = os.path.expanduser("~/.proxima/results")
+        os.makedirs(local_path, exist_ok=True)
+        
+        try:
+            # Check if writable
+            test_file = os.path.join(local_path, ".write_test")
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+            is_writable = True
+        except Exception:
+            is_writable = False
+        
+        # Get free space
+        try:
+            if hasattr(os, 'statvfs'):
+                stat = os.statvfs(local_path)
+                free_space_mb = (stat.f_frsize * stat.f_bavail) // (1024 * 1024)
+            else:
+                import shutil
+                total, used, free = shutil.disk_usage(local_path)
+                free_space_mb = free // (1024 * 1024)
+        except Exception:
+            free_space_mb = 0
+        
+        backends["local"] = StorageInfo(
+            name="local",
+            storage_type="local",
+            path_or_endpoint=local_path,
+            is_available=True,
+            is_writable=is_writable,
+            free_space_mb=free_space_mb,
+        )
+        logger.debug("local_storage_detected", path=local_path, writable=is_writable)
+        
+        # Check for S3 configuration
+        s3_bucket = os.environ.get("PROXIMA_S3_BUCKET")
+        if s3_bucket:
+            try:
+                import boto3  # noqa: F401
+                backends["s3"] = StorageInfo(
+                    name="s3",
+                    storage_type="s3",
+                    path_or_endpoint=f"s3://{s3_bucket}",
+                    is_available=True,
+                    is_writable=True,
+                    free_space_mb=-1,  # Unlimited
+                )
+                logger.debug("s3_storage_detected", bucket=s3_bucket)
+            except ImportError:
+                logger.debug("s3_not_available", reason="boto3 not installed")
+        
+        # Check for GCS configuration
+        gcs_bucket = os.environ.get("PROXIMA_GCS_BUCKET")
+        if gcs_bucket:
+            try:
+                from google.cloud import storage as gcs  # noqa: F401
+                backends["gcs"] = StorageInfo(
+                    name="gcs",
+                    storage_type="gcs",
+                    path_or_endpoint=f"gs://{gcs_bucket}",
+                    is_available=True,
+                    is_writable=True,
+                    free_space_mb=-1,
+                )
+                logger.debug("gcs_storage_detected", bucket=gcs_bucket)
+            except ImportError:
+                logger.debug("gcs_not_available", reason="google-cloud-storage not installed")
+        
+        # Check for Azure Blob configuration
+        azure_container = os.environ.get("PROXIMA_AZURE_CONTAINER")
+        if azure_container:
+            try:
+                from azure.storage.blob import BlobServiceClient  # noqa: F401
+                backends["azure"] = StorageInfo(
+                    name="azure",
+                    storage_type="azure",
+                    path_or_endpoint=f"azure://{azure_container}",
+                    is_available=True,
+                    is_writable=True,
+                    free_space_mb=-1,
+                )
+                logger.debug("azure_storage_detected", container=azure_container)
+            except ImportError:
+                logger.debug("azure_not_available", reason="azure-storage-blob not installed")
+        
+        return backends
+    
+    def get_backend(self, name: str = None) -> StorageInfo | None:
+        """Get a specific storage backend or the default."""
+        if name is None:
+            name = self._default_backend
+        return self._backends.get(name)
+    
+    @property
+    def available_backends(self) -> list[str]:
+        """Get list of available storage backend names."""
+        return [k for k, v in self._backends.items() if v.is_available]
+    
+    async def save_result(self, execution_id: str, data: dict[str, Any], backend: str = None) -> str:
+        """Save execution result to storage.
+        
+        Args:
+            execution_id: Unique execution identifier.
+            data: Result data to save.
+            backend: Storage backend name (uses default if None).
+            
+        Returns:
+            Path or URI where data was saved.
+        """
+        import json
+        from datetime import datetime
+        
+        storage = self.get_backend(backend)
+        if not storage or not storage.is_available:
+            raise RuntimeError(f"Storage backend '{backend or self._default_backend}' not available")
+        
+        if storage.storage_type == "local":
+            import os
+            filename = f"{execution_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            filepath = os.path.join(storage.path_or_endpoint, filename)
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, default=str)
+            logger.info("result_saved", backend="local", path=filepath)
+            return filepath
+        
+        # For cloud backends, would implement upload logic
+        raise NotImplementedError(f"Cloud storage backend '{storage.storage_type}' save not yet implemented")
+    
+    async def load_result(self, path_or_uri: str) -> dict[str, Any]:
+        """Load execution result from storage.
+        
+        Args:
+            path_or_uri: Path or URI to load from.
+            
+        Returns:
+            Loaded result data.
+        """
+        import json
+        import os
+        
+        if os.path.exists(path_or_uri):
+            with open(path_or_uri, "r", encoding="utf-8") as f:
+                return json.load(f)
+        
+        raise FileNotFoundError(f"Result not found: {path_or_uri}")
+
+
+# =============================================================================
+# NOTIFICATION INTEGRATION
+# =============================================================================
+
+
+@dataclass
+class NotificationChannel:
+    """Information about a notification channel."""
+    
+    name: str
+    channel_type: str  # "console", "email", "slack", "webhook"
+    endpoint: str
+    is_configured: bool = False
+    is_available: bool = False
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "name": self.name,
+            "channel_type": self.channel_type,
+            "endpoint": self.endpoint,
+            "is_configured": self.is_configured,
+            "is_available": self.is_available,
+        }
+
+
+class NotificationIntegration(ExternalIntegration):
+    """Integration for sending notifications about execution status."""
+    
+    SUPPORTED_TYPES = ["console", "email", "slack", "webhook"]
+    
+    def __init__(self):
+        super().__init__("notifications", IntegrationType.NOTIFICATION)
+        self._channels: dict[str, NotificationChannel] = {}
+    
+    async def connect(self) -> bool:
+        """Discover and configure notification channels."""
+        self._channels = await self._discover_channels()
+        self._connected = len(self._channels) > 0
+        logger.info(
+            "notification_integration_connected",
+            channels=list(self._channels.keys()),
+        )
+        return self._connected
+    
+    async def disconnect(self) -> bool:
+        """Disconnect notification channels."""
+        self._channels = {}
+        self._connected = False
+        return True
+    
+    async def health_check(self) -> IntegrationHealth:
+        """Check notification channel availability."""
+        available = [k for k, v in self._channels.items() if v.is_available]
+        
+        if not available:
+            return IntegrationHealth(
+                name=self.name,
+                integration_type=self.integration_type,
+                status=IntegrationStatus.NOT_CONFIGURED,
+                message="No notification channels configured",
+            )
+        
+        return IntegrationHealth(
+            name=self.name,
+            integration_type=self.integration_type,
+            status=IntegrationStatus.AVAILABLE,
+            message=f"{len(available)} notification channels available",
+            capabilities=available,
+            metadata={"channels": {k: v.to_dict() for k, v in self._channels.items()}},
+        )
+    
+    async def _discover_channels(self) -> dict[str, NotificationChannel]:
+        """Discover configured notification channels."""
+        import os
+        channels = {}
+        
+        # Console is always available
+        channels["console"] = NotificationChannel(
+            name="console",
+            channel_type="console",
+            endpoint="stdout",
+            is_configured=True,
+            is_available=True,
+        )
+        
+        # Check for Slack webhook
+        slack_webhook = os.environ.get("PROXIMA_SLACK_WEBHOOK")
+        if slack_webhook:
+            channels["slack"] = NotificationChannel(
+                name="slack",
+                channel_type="slack",
+                endpoint=slack_webhook[:50] + "...",  # Truncate for logging
+                is_configured=True,
+                is_available=True,
+            )
+            logger.debug("slack_channel_detected")
+        
+        # Check for generic webhook
+        webhook_url = os.environ.get("PROXIMA_WEBHOOK_URL")
+        if webhook_url:
+            channels["webhook"] = NotificationChannel(
+                name="webhook",
+                channel_type="webhook",
+                endpoint=webhook_url[:50] + "...",
+                is_configured=True,
+                is_available=True,
+            )
+            logger.debug("webhook_channel_detected")
+        
+        # Check for email configuration
+        smtp_host = os.environ.get("PROXIMA_SMTP_HOST")
+        email_to = os.environ.get("PROXIMA_EMAIL_TO")
+        if smtp_host and email_to:
+            channels["email"] = NotificationChannel(
+                name="email",
+                channel_type="email",
+                endpoint=email_to,
+                is_configured=True,
+                is_available=True,
+            )
+            logger.debug("email_channel_detected", to=email_to)
+        
+        return channels
+    
+    def get_channel(self, name: str) -> NotificationChannel | None:
+        """Get a specific notification channel."""
+        return self._channels.get(name)
+    
+    @property
+    def available_channels(self) -> list[str]:
+        """Get list of available notification channel names."""
+        return [k for k, v in self._channels.items() if v.is_available]
+    
+    async def send(
+        self,
+        message: str,
+        title: str = "Proxima Notification",
+        level: str = "info",
+        channels: list[str] = None,
+        metadata: dict[str, Any] = None,
+    ) -> dict[str, bool]:
+        """Send notification to specified channels.
+        
+        Args:
+            message: Notification message.
+            title: Notification title.
+            level: Notification level (info, warning, error, success).
+            channels: List of channel names (uses all available if None).
+            metadata: Additional data to include.
+            
+        Returns:
+            Dict mapping channel names to success status.
+        """
+        import os
+        
+        if channels is None:
+            channels = self.available_channels
+        
+        results = {}
+        
+        for channel_name in channels:
+            channel = self._channels.get(channel_name)
+            if not channel or not channel.is_available:
+                results[channel_name] = False
+                continue
+            
+            try:
+                if channel.channel_type == "console":
+                    # Console notification
+                    level_icons = {
+                        "info": "ℹ️",
+                        "warning": "⚠️",
+                        "error": "❌",
+                        "success": "✅",
+                    }
+                    icon = level_icons.get(level, "📢")
+                    print(f"\n{icon} [{title}] {message}")
+                    if metadata:
+                        print(f"   Details: {metadata}")
+                    results[channel_name] = True
+                
+                elif channel.channel_type == "slack":
+                    # Slack webhook notification
+                    webhook_url = os.environ.get("PROXIMA_SLACK_WEBHOOK")
+                    if webhook_url:
+                        results[channel_name] = await self._send_slack(
+                            webhook_url, title, message, level, metadata
+                        )
+                    else:
+                        results[channel_name] = False
+                
+                elif channel.channel_type == "webhook":
+                    # Generic webhook notification
+                    webhook_url = os.environ.get("PROXIMA_WEBHOOK_URL")
+                    if webhook_url:
+                        results[channel_name] = await self._send_webhook(
+                            webhook_url, title, message, level, metadata
+                        )
+                    else:
+                        results[channel_name] = False
+                
+                elif channel.channel_type == "email":
+                    # Email notification
+                    results[channel_name] = await self._send_email(
+                        title, message, level, metadata
+                    )
+                
+                else:
+                    results[channel_name] = False
+                    
+            except Exception as e:
+                logger.error("notification_send_failed", channel=channel_name, error=str(e))
+                results[channel_name] = False
+        
+        return results
+    
+    async def _send_slack(
+        self,
+        webhook_url: str,
+        title: str,
+        message: str,
+        level: str,
+        metadata: dict = None,
+    ) -> bool:
+        """Send Slack notification."""
+        try:
+            import httpx
+            
+            color_map = {
+                "info": "#2196F3",
+                "warning": "#FF9800",
+                "error": "#F44336",
+                "success": "#4CAF50",
+            }
+            
+            payload = {
+                "attachments": [{
+                    "color": color_map.get(level, "#2196F3"),
+                    "title": title,
+                    "text": message,
+                    "fields": [
+                        {"title": k, "value": str(v), "short": True}
+                        for k, v in (metadata or {}).items()
+                    ][:10],  # Limit fields
+                }]
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(webhook_url, json=payload, timeout=10.0)
+                return response.status_code == 200
+                
+        except ImportError:
+            logger.debug("slack_send_failed", reason="httpx not installed")
+            return False
+        except Exception as e:
+            logger.error("slack_send_error", error=str(e))
+            return False
+    
+    async def _send_webhook(
+        self,
+        webhook_url: str,
+        title: str,
+        message: str,
+        level: str,
+        metadata: dict = None,
+    ) -> bool:
+        """Send generic webhook notification."""
+        try:
+            import httpx
+            from datetime import datetime
+            
+            payload = {
+                "title": title,
+                "message": message,
+                "level": level,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": metadata or {},
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(webhook_url, json=payload, timeout=10.0)
+                return 200 <= response.status_code < 300
+                
+        except ImportError:
+            logger.debug("webhook_send_failed", reason="httpx not installed")
+            return False
+        except Exception as e:
+            logger.error("webhook_send_error", error=str(e))
+            return False
+    
+    async def _send_email(
+        self,
+        title: str,
+        message: str,
+        level: str,
+        metadata: dict = None,
+    ) -> bool:
+        """Send email notification."""
+        import os
+        
+        smtp_host = os.environ.get("PROXIMA_SMTP_HOST")
+        smtp_port = int(os.environ.get("PROXIMA_SMTP_PORT", "587"))
+        smtp_user = os.environ.get("PROXIMA_SMTP_USER")
+        smtp_pass = os.environ.get("PROXIMA_SMTP_PASS")
+        email_from = os.environ.get("PROXIMA_EMAIL_FROM", smtp_user)
+        email_to = os.environ.get("PROXIMA_EMAIL_TO")
+        
+        if not all([smtp_host, email_to]):
+            return False
+        
+        try:
+            import smtplib
+            from email.mime.text import MIMEText
+            from email.mime.multipart import MIMEMultipart
+            
+            msg = MIMEMultipart()
+            msg["From"] = email_from
+            msg["To"] = email_to
+            msg["Subject"] = f"[Proxima - {level.upper()}] {title}"
+            
+            body = f"{message}\n\n"
+            if metadata:
+                body += "Details:\n"
+                for k, v in metadata.items():
+                    body += f"  - {k}: {v}\n"
+            
+            msg.attach(MIMEText(body, "plain"))
+            
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                if smtp_user and smtp_pass:
+                    server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+            
+            logger.info("email_notification_sent", to=email_to)
+            return True
+            
+        except Exception as e:
+            logger.error("email_send_error", error=str(e))
+            return False
+    
+    async def notify_execution_complete(
+        self,
+        execution_id: str,
+        status: str,
+        duration_seconds: float,
+        backend: str = None,
+    ) -> dict[str, bool]:
+        """Send notification about execution completion.
+        
+        Args:
+            execution_id: Execution identifier.
+            status: Execution status (success, failed, cancelled).
+            duration_seconds: Execution duration.
+            backend: Backend used for execution.
+            
+        Returns:
+            Dict mapping channel names to success status.
+        """
+        level = "success" if status == "success" else "error" if status == "failed" else "warning"
+        
+        return await self.send(
+            message=f"Execution '{execution_id}' completed with status: {status}",
+            title="Execution Complete",
+            level=level,
+            metadata={
+                "execution_id": execution_id,
+                "status": status,
+                "duration": f"{duration_seconds:.2f}s",
+                "backend": backend or "auto",
+            },
+        )
+
+
+
 # =============================================================================
 # INTEGRATION MANAGER
 # =============================================================================
@@ -571,6 +1185,8 @@ class IntegrationManager:
         self._integrations["quantum"] = QuantumIntegration()
         self._integrations["llm"] = LLMIntegration()
         self._integrations["system"] = SystemResourceIntegration()
+        self._integrations["storage"] = StorageIntegration()
+        self._integrations["notifications"] = NotificationIntegration()
 
         # Connect all
         for name, integration in self._integrations.items():
@@ -626,6 +1242,16 @@ class IntegrationManager:
         """Get the system resource integration."""
         return self._integrations["system"]  # type: ignore
 
+    @property
+    def storage(self) -> StorageIntegration:
+        """Get the storage integration."""
+        return self._integrations["storage"]  # type: ignore
+
+    @property
+    def notifications(self) -> NotificationIntegration:
+        """Get the notification integration."""
+        return self._integrations["notifications"]  # type: ignore
+
     async def get_status_report(self) -> dict[str, Any]:
         """Get a comprehensive status report."""
         health = await self.health_check_all()
@@ -665,6 +1291,10 @@ __all__ = [
     "LLMProviderInfo",
     "SystemResourceIntegration",
     "SystemResourceInfo",
+    "StorageIntegration",
+    "StorageInfo",
+    "NotificationIntegration",
+    "NotificationChannel",
     "IntegrationManager",
     "get_integration_manager",
 ]
