@@ -58,6 +58,8 @@ def main(
     logger = get_logger("cli.run")
     effective_backend = backend or settings.backends.default_backend
 
+    typer.echo(f"[DEBUG] Starting run with backend: {effective_backend}")
+
     logger.info(
         "run.start",
         objective=objective,
@@ -133,18 +135,42 @@ def main(
     if dry_run:
         steps = ["Initialize execution", "Plan objective (dry-run)"]
 
+    # Import runner before entering progress context
+    quantum_runner = None
+    runner_error = None
+    try:
+        import sys
+        # Add src to path if not there
+        src_path = str(Path(__file__).parent.parent.parent.parent)
+        if src_path not in sys.path:
+            sys.path.insert(0, src_path)
+        
+        from proxima.core.runner import quantum_runner
+        logger.info("runner.loaded", status="success")
+    except Exception as e:
+        runner_error = str(e)
+        logger.warning("runner.load_failed", error=str(e))
+        quantum_runner = None
+    
+    if not quiet and runner_error:
+        typer.echo(f"[!] Runner load failed: {runner_error}")
+
     try:
         with step_context(
             steps, title=f"Running: {objective}", no_progress=no_progress or quiet
         ) as progress:
-            # Step 1: Initialize
+            # Step 1: Initialize            
             fsm = ExecutionStateMachine()
             planner = Planner(fsm)
-            executor = Executor(fsm)
+            executor = Executor(fsm, runner=quantum_runner)
             progress.advance()
 
             # Step 2: Plan
             plan = planner.plan(objective)
+            # Add runtime configuration to plan
+            plan["backend"] = effective_backend
+            plan["shots"] = shots or 1024
+            plan["objective"] = objective
             progress.advance()
 
             if dry_run:
@@ -207,11 +233,30 @@ def main(
         if output_format == "json":
             echo_output(ctx, execution_result, format="json")
         elif not quiet:
-            typer.echo("\n[OK] Execution complete")
-            typer.echo(f"  State: {fsm.state}")
-            typer.echo(f"  Backend: {effective_backend}")
+            typer.echo(f"\n✅ State: {fsm.state}")
+            typer.echo(f"⚡ Backend: {effective_backend}")
+            
             if isinstance(result, dict):
-                typer.echo(f"  Results: {len(result)} items")
+                if result.get("status") == "success":
+                    typer.echo(f"🎯 Circuit: {result.get('circuit_type', 'unknown')} ({result.get('qubits', 0)} qubits)")
+                    typer.echo(f"⏱️  Execution time: {result.get('execution_time_ms', 0):.2f} ms")
+                    typer.echo(f"🔢 Shots: {result.get('shots', 0)}")
+                    typer.echo("\n📊 Measurement Results:")
+                    
+                    counts = result.get("counts", {})
+                    for state, data in list(counts.items())[:10]:  # Show top 10
+                        count = data.get("count", 0)
+                        percentage = data.get("percentage", 0)
+                        bar_length = int(percentage / 2)  # Scale to max 50 chars
+                        bar = "█" * bar_length
+                        typer.echo(f"  |{state}⟩: {percentage:6.2f}% {bar} ({count})")
+                    
+                    if len(counts) > 10:
+                        typer.echo(f"  ... and {len(counts) - 10} more states")
+                elif result.get("status") == "error":
+                    typer.echo(f"❌ Error: {result.get('error', 'Unknown error')}")
+                else:
+                    typer.echo(f"  Results: {len(result)} items")
 
     except KeyboardInterrupt:
         typer.echo("\n[!] Execution cancelled by user")

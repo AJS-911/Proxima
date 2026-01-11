@@ -21,6 +21,7 @@ from .agent_interpreter import (
     # Convenience function
     run_agent_file,
 )
+from .runner import quantum_runner
 
 __all__ = [
     # Enums
@@ -42,4 +43,5 @@ __all__ = [
     "AgentInterpreter",
     # Convenience function
     "run_agent_file",
+    "quantum_runner",
 ]
