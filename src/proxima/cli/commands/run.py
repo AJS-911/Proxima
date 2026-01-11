@@ -11,6 +11,7 @@ This module provides the complete run command with:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable
 
 import typer
 
@@ -136,21 +137,16 @@ def main(
         steps = ["Initialize execution", "Plan objective (dry-run)"]
 
     # Import runner before entering progress context
-    quantum_runner = None
-    runner_error = None
+    runner_func: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    runner_error: str | None = None
     try:
-        import sys
-        # Add src to path if not there
-        src_path = str(Path(__file__).parent.parent.parent.parent)
-        if src_path not in sys.path:
-            sys.path.insert(0, src_path)
-
         from proxima.core.runner import quantum_runner
+
+        runner_func = quantum_runner
         logger.info("runner.loaded", status="success")
     except Exception as e:
         runner_error = str(e)
         logger.warning("runner.load_failed", error=str(e))
-        quantum_runner = None
 
     if not quiet and runner_error:
         typer.echo(f"[!] Runner load failed: {runner_error}")
@@ -162,7 +158,7 @@ def main(
             # Step 1: Initialize
             fsm = ExecutionStateMachine()
             planner = Planner(fsm)
-            executor = Executor(fsm, runner=quantum_runner)
+            executor = Executor(fsm, runner=runner_func)
             progress.advance()
 
             # Step 2: Plan
@@ -238,7 +234,9 @@ def main(
 
             if isinstance(result, dict):
                 if result.get("status") == "success":
-                    typer.echo(f"🎯 Circuit: {result.get('circuit_type', 'unknown')} ({result.get('qubits', 0)} qubits)")
+                    typer.echo(
+                        f"🎯 Circuit: {result.get('circuit_type', 'unknown')} ({result.get('qubits', 0)} qubits)"
+                    )
                     typer.echo(f"⏱️  Execution time: {result.get('execution_time_ms', 0):.2f} ms")
                     typer.echo(f"🔢 Shots: {result.get('shots', 0)}")
                     typer.echo("\n📊 Measurement Results:")

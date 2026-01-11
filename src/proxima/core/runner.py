@@ -51,16 +51,13 @@ def create_teleportation_circuit() -> cirq.Circuit:
         # Prepare state to teleport (arbitrary superposition)
         cirq.H(q0),
         cirq.T(q0),
-
         # Create Bell pair between q1 and q2
         cirq.H(q1),
         cirq.CNOT(q1, q2),
-
         # Bell measurement on q0 and q1
         cirq.CNOT(q0, q1),
         cirq.H(q0),
         cirq.measure(q0, q1, key="bell_measurement"),
-
         # Conditional corrections on q2 (simplified for simulation)
         # In real implementation, these would be conditional on measurements
         # For demonstration, we measure the final state
@@ -85,6 +82,7 @@ def parse_objective(objective: str) -> dict[str, Any]:
     elif "ghz" in objective_lower:
         # Try to extract qubit count
         import re
+
         match = re.search(r"(\d+)[-\s]*qubit", objective_lower)
         num_qubits = int(match.group(1)) if match else 3
         return {"circuit_type": "ghz", "qubits": num_qubits}
