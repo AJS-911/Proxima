@@ -42,25 +42,25 @@ def create_ghz_state_circuit(num_qubits: int = 3) -> cirq.Circuit:
 
 def create_teleportation_circuit() -> cirq.Circuit:
     """Create a quantum teleportation circuit.
-    
+
     Teleports the state of qubit 0 to qubit 2 using qubit 1 as an entangled resource.
     """
     q0, q1, q2 = cirq.LineQubit.range(3)
-    
+
     circuit = cirq.Circuit(
         # Prepare state to teleport (arbitrary superposition)
         cirq.H(q0),
         cirq.T(q0),
-        
+
         # Create Bell pair between q1 and q2
         cirq.H(q1),
         cirq.CNOT(q1, q2),
-        
+
         # Bell measurement on q0 and q1
         cirq.CNOT(q0, q1),
         cirq.H(q0),
         cirq.measure(q0, q1, key="bell_measurement"),
-        
+
         # Conditional corrections on q2 (simplified for simulation)
         # In real implementation, these would be conditional on measurements
         # For demonstration, we measure the final state
@@ -71,15 +71,15 @@ def create_teleportation_circuit() -> cirq.Circuit:
 
 def parse_objective(objective: str) -> dict[str, Any]:
     """Parse natural language objective into circuit specification.
-    
+
     Args:
         objective: Natural language description of the quantum circuit
-        
+
     Returns:
         Dictionary with circuit_type and parameters
     """
     objective_lower = objective.lower()
-    
+
     if "bell" in objective_lower:
         return {"circuit_type": "bell", "qubits": 2}
     elif "ghz" in objective_lower:
@@ -97,20 +97,20 @@ def parse_objective(objective: str) -> dict[str, Any]:
 
 def quantum_runner(plan: dict[str, Any]) -> dict[str, Any]:
     """Execute a quantum circuit based on the plan.
-    
+
     Args:
         plan: Execution plan with objective and configuration
-        
+
     Returns:
         Execution results including counts and metadata
     """
     logger.info("runner.start", plan=plan)
-    
+
     # Extract configuration from plan
     objective = plan.get("objective", "demo")
     backend_name = plan.get("backend", "cirq")
     shots = plan.get("shots", 1024)
-    
+
     # Handle auto backend selection
     if backend_name == "auto":
         registry = BackendRegistry()
@@ -124,11 +124,11 @@ def quantum_runner(plan: dict[str, Any]) -> dict[str, Any]:
                 "status": "error",
                 "error": "No backends available",
             }
-    
+
     # Parse objective to determine circuit type
     circuit_spec = parse_objective(objective)
     logger.info("runner.parsed", circuit_spec=circuit_spec)
-    
+
     # Create circuit based on type
     if circuit_spec["circuit_type"] == "bell":
         circuit = create_bell_state_circuit()
@@ -139,34 +139,34 @@ def quantum_runner(plan: dict[str, Any]) -> dict[str, Any]:
     else:
         # Default
         circuit = create_bell_state_circuit()
-    
+
     logger.info("runner.circuit_created", qubits=len(circuit.all_qubits()))
-    
+
     # Get backend adapter
     registry = BackendRegistry()
     registry.discover()  # Discover available backends
     adapter = registry.get(backend_name)
-    
+
     if not adapter.is_available():
         return {
             "status": "error",
             "error": f"Backend {backend_name} not available",
         }
-    
+
     # Execute circuit
     options = {
         "simulator_type": SimulatorType.STATE_VECTOR,
         "shots": shots,
         "repetitions": shots,
     }
-    
+
     try:
         result = adapter.execute(circuit, options)
         logger.info("runner.executed", backend=backend_name, time_ms=result.execution_time_ms)
-        
+
         # Format results
         counts = result.data.get("counts", {})
-        
+
         # Calculate percentages and format output
         total_shots = sum(counts.values())
         formatted_counts = {}
@@ -176,7 +176,7 @@ def quantum_runner(plan: dict[str, Any]) -> dict[str, Any]:
                 "count": count,
                 "percentage": round(percentage, 2),
             }
-        
+
         return {
             "status": "success",
             "backend": backend_name,
@@ -187,7 +187,7 @@ def quantum_runner(plan: dict[str, Any]) -> dict[str, Any]:
             "counts": formatted_counts,
             "raw_counts": counts,
         }
-        
+
     except Exception as e:
         logger.error("runner.failed", error=str(e))
         return {

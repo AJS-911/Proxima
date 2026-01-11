@@ -144,14 +144,14 @@ def main(
         src_path = str(Path(__file__).parent.parent.parent.parent)
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
-        
+
         from proxima.core.runner import quantum_runner
         logger.info("runner.loaded", status="success")
     except Exception as e:
         runner_error = str(e)
         logger.warning("runner.load_failed", error=str(e))
         quantum_runner = None
-    
+
     if not quiet and runner_error:
         typer.echo(f"[!] Runner load failed: {runner_error}")
 
@@ -159,7 +159,7 @@ def main(
         with step_context(
             steps, title=f"Running: {objective}", no_progress=no_progress or quiet
         ) as progress:
-            # Step 1: Initialize            
+            # Step 1: Initialize
             fsm = ExecutionStateMachine()
             planner = Planner(fsm)
             executor = Executor(fsm, runner=quantum_runner)
@@ -235,14 +235,14 @@ def main(
         elif not quiet:
             typer.echo(f"\n✅ State: {fsm.state}")
             typer.echo(f"⚡ Backend: {effective_backend}")
-            
+
             if isinstance(result, dict):
                 if result.get("status") == "success":
                     typer.echo(f"🎯 Circuit: {result.get('circuit_type', 'unknown')} ({result.get('qubits', 0)} qubits)")
                     typer.echo(f"⏱️  Execution time: {result.get('execution_time_ms', 0):.2f} ms")
                     typer.echo(f"🔢 Shots: {result.get('shots', 0)}")
                     typer.echo("\n📊 Measurement Results:")
-                    
+
                     counts = result.get("counts", {})
                     for state, data in list(counts.items())[:10]:  # Show top 10
                         count = data.get("count", 0)
@@ -250,7 +250,7 @@ def main(
                         bar_length = int(percentage / 2)  # Scale to max 50 chars
                         bar = "█" * bar_length
                         typer.echo(f"  |{state}⟩: {percentage:6.2f}% {bar} ({count})")
-                    
+
                     if len(counts) > 10:
                         typer.echo(f"  ... and {len(counts) - 10} more states")
                 elif result.get("status") == "error":
