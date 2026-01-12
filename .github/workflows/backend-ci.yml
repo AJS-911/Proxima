@@ -1,4 +1,4 @@
-﻿# Proxima Backend CI/CD Pipeline
+# Proxima Backend CI/CD Pipeline
 # Runs tests for all quantum backends on multiple platforms
 
 name: Backend CI
@@ -84,8 +84,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results-core
-          path: junit/
+          name: test-results-core-${{ matrix.python-version }}`n          path: junit/
 
   # ============================================
   # Backend Tests - QuEST

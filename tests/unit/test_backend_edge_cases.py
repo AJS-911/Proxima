@@ -519,7 +519,14 @@ class TestBackendIntegration:
 
         # All should have names
         for status in statuses:
-            assert status.name in ["lret", "cirq", "qiskit"]
+            assert status.name in [
+                "lret",
+                "cirq",
+                "qiskit",
+                "quest",
+                "cuquantum",
+                "qsim",
+            ]
 
 
 # =============================================================================
