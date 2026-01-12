@@ -852,7 +852,9 @@ class DataFlowPipeline:
         # Rollback configuration
         self._enable_rollback = True
         self._auto_checkpoint = True
-        self._rollback_on_failure = False  # If True, automatically rollback to last checkpoint on failure
+        self._rollback_on_failure = (
+            False  # If True, automatically rollback to last checkpoint on failure
+        )
 
     def on_stage_start(self, callback: Callable[[PipelineStage, PipelineContext], None]) -> None:
         """Register callback for stage start events."""
@@ -870,9 +872,7 @@ class DataFlowPipeline:
         """Replace a stage handler."""
         self.handlers[stage] = handler
 
-    def on_rollback(
-        self, callback: Callable[[PipelineStage, str, PipelineContext], None]
-    ) -> None:
+    def on_rollback(self, callback: Callable[[PipelineStage, str, PipelineContext], None]) -> None:
         """Register callback for rollback events.
 
         Args:
@@ -897,9 +897,7 @@ class DataFlowPipeline:
         self._auto_checkpoint = auto_checkpoint
         self._rollback_on_failure = rollback_on_failure
 
-    async def rollback_to_stage(
-        self, ctx: PipelineContext, target_stage: PipelineStage
-    ) -> bool:
+    async def rollback_to_stage(self, ctx: PipelineContext, target_stage: PipelineStage) -> bool:
         """Rollback to a specific stage checkpoint.
 
         Args:
@@ -917,7 +915,10 @@ class DataFlowPipeline:
         target_checkpoint = None
         for cp_id, cp_data in ctx.checkpoints.items():
             if cp_data["stage"] == target_stage.name:
-                if target_checkpoint is None or cp_data["timestamp"] > ctx.checkpoints[target_checkpoint]["timestamp"]:
+                if (
+                    target_checkpoint is None
+                    or cp_data["timestamp"] > ctx.checkpoints[target_checkpoint]["timestamp"]
+                ):
                     target_checkpoint = cp_id
 
         if not target_checkpoint:
@@ -1042,7 +1043,11 @@ class DataFlowPipeline:
                                 "rollback_completed",
                                 execution_id=ctx.execution_id,
                                 from_stage=stage.name,
-                                to_stage=ctx.last_successful_stage.name if ctx.last_successful_stage else "none",
+                                to_stage=(
+                                    ctx.last_successful_stage.name
+                                    if ctx.last_successful_stage
+                                    else "none"
+                                ),
                             )
 
                     break

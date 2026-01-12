@@ -740,7 +740,7 @@ class ConfigurationScreen(BaseScreen):
             field_type="text",
             default=os.path.expanduser("~/.proxima/config.json"),
             placeholder="Path to config file (JSON or YAML)",
-            required=True
+            required=True,
         )
 
         modal = FormModal(title="Import Configuration", fields=[field])
@@ -759,6 +759,7 @@ class ConfigurationScreen(BaseScreen):
                 if filepath.endswith((".yml", ".yaml")):
                     try:
                         import yaml
+
                         config = yaml.safe_load(f)
                     except ImportError:
                         self.notify("YAML support requires pyyaml package", severity="error")
@@ -1135,7 +1136,9 @@ class BackendsScreen(BaseScreen):
             self.notify("No backend selected", severity="warning")
             return
 
-        self.notify(f"Testing connection to {self._selected_backend.name}...", severity="information")
+        self.notify(
+            f"Testing connection to {self._selected_backend.name}...", severity="information"
+        )
 
         try:
             # Try to test actual backend connection
@@ -1146,18 +1149,28 @@ class BackendsScreen(BaseScreen):
                 # Attempt a simple test
                 is_available = await backend.is_available()
                 if is_available:
-                    self.notify(f"{self._selected_backend.name}: Connection successful!", severity="information")
+                    self.notify(
+                        f"{self._selected_backend.name}: Connection successful!",
+                        severity="information",
+                    )
                     self._selected_backend.status = BackendStatus.CONNECTED
                 else:
-                    self.notify(f"{self._selected_backend.name}: Connection failed", severity="error")
+                    self.notify(
+                        f"{self._selected_backend.name}: Connection failed", severity="error"
+                    )
                     self._selected_backend.status = BackendStatus.ERROR
                 # Refresh the display
                 self._show_backend_details(self._selected_backend)
             else:
-                self.notify(f"Backend {self._selected_backend.name} not found in registry", severity="warning")
+                self.notify(
+                    f"Backend {self._selected_backend.name} not found in registry",
+                    severity="warning",
+                )
         except ImportError:
             # Fallback if registry not available
-            self.notify(f"Simulated test for {self._selected_backend.name}: OK", severity="information")
+            self.notify(
+                f"Simulated test for {self._selected_backend.name}: OK", severity="information"
+            )
         except Exception as e:
             self.notify(f"Connection test failed: {e}", severity="error")
 
@@ -1171,26 +1184,26 @@ class BackendsScreen(BaseScreen):
                 label="Backend Name",
                 field_type="text",
                 placeholder="e.g., my_custom_backend",
-                required=True
+                required=True,
             ),
             FormField(
                 key="backend_type",
                 label="Backend Type",
                 field_type="text",
                 default="simulator",
-                placeholder="simulator, cloud, local"
+                placeholder="simulator, cloud, local",
             ),
             FormField(
                 key="endpoint",
                 label="Endpoint URL (optional)",
                 field_type="text",
-                placeholder="http://localhost:8080"
+                placeholder="http://localhost:8080",
             ),
             FormField(
                 key="api_key",
                 label="API Key (optional)",
                 field_type="password",
-                placeholder="Enter API key if required"
+                placeholder="Enter API key if required",
             ),
         ]
 
@@ -1216,7 +1229,7 @@ class BackendsScreen(BaseScreen):
                 name=backend_name,
                 backend_type=data.get("backend_type", "simulator"),
                 endpoint=data.get("endpoint"),
-                api_key=data.get("api_key")
+                api_key=data.get("api_key"),
             )
 
             self.notify(f"Backend '{backend_name}' added successfully!", severity="information")
@@ -1224,7 +1237,9 @@ class BackendsScreen(BaseScreen):
 
         except ImportError:
             # Fallback if registry not available - just show success
-            self.notify(f"Backend '{backend_name}' registered (simulation mode)", severity="information")
+            self.notify(
+                f"Backend '{backend_name}' registered (simulation mode)", severity="information"
+            )
             self._refresh_backends()
         except AttributeError:
             # register_custom might not exist
@@ -1246,21 +1261,21 @@ class BackendsScreen(BaseScreen):
                 label="Timeout (seconds)",
                 field_type="text",
                 default="300",
-                placeholder="Request timeout"
+                placeholder="Request timeout",
             ),
             FormField(
                 key="max_shots",
                 label="Max Shots",
                 field_type="text",
                 default="10000",
-                placeholder="Maximum shots per execution"
+                placeholder="Maximum shots per execution",
             ),
             FormField(
                 key="retry_count",
                 label="Retry Count",
                 field_type="text",
                 default="3",
-                placeholder="Number of retries on failure"
+                placeholder="Number of retries on failure",
             ),
         ]
 
@@ -1281,9 +1296,11 @@ class BackendsScreen(BaseScreen):
                 backend.configure(
                     timeout=int(data.get("timeout", 300)),
                     max_shots=int(data.get("max_shots", 10000)),
-                    retry_count=int(data.get("retry_count", 3))
+                    retry_count=int(data.get("retry_count", 3)),
                 )
-            self.notify(f"Configuration applied to {self._selected_backend.name}", severity="information")
+            self.notify(
+                f"Configuration applied to {self._selected_backend.name}", severity="information"
+            )
         except Exception as e:
             self.notify(f"Configuration applied (local only): {e}", severity="warning")
 

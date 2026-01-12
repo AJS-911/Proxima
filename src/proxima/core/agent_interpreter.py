@@ -660,7 +660,9 @@ class DefaultTaskExecutor:
         self._default_backend = default_backend or self.DEFAULT_BACKEND
         self._default_timeout = default_timeout or self.DEFAULT_TIMEOUT_SECONDS
         self._retry_count = retry_count if retry_count is not None else self.DEFAULT_RETRY_COUNT
-        self._retry_delay = retry_delay if retry_delay is not None else self.DEFAULT_RETRY_DELAY_SECONDS
+        self._retry_delay = (
+            retry_delay if retry_delay is not None else self.DEFAULT_RETRY_DELAY_SECONDS
+        )
         self._enable_script_execution = enable_script_execution
 
         self._handlers: dict[TaskType, Callable] = {
@@ -725,6 +727,7 @@ class DefaultTaskExecutor:
                 last_error = e
                 if attempt < self._retry_count - 1:
                     import time
+
                     time.sleep(self._retry_delay)
                     continue
 
@@ -1019,7 +1022,9 @@ class DefaultTaskExecutor:
             # Security check 2: Size limit
             if len(script.encode("utf-8")) > self.MAX_SCRIPT_SIZE_BYTES:
                 result["success"] = False
-                result["error"] = f"Script exceeds maximum size of {self.MAX_SCRIPT_SIZE_BYTES} bytes"
+                result["error"] = (
+                    f"Script exceeds maximum size of {self.MAX_SCRIPT_SIZE_BYTES} bytes"
+                )
                 return result
 
             # Security check 3: Dangerous pattern detection
@@ -1110,7 +1115,9 @@ class DefaultTaskExecutor:
 
                 if thread.is_alive():
                     result["success"] = False
-                    result["error"] = f"Script execution timed out after {self.SCRIPT_EXECUTION_TIMEOUT} seconds"
+                    result["error"] = (
+                        f"Script execution timed out after {self.SCRIPT_EXECUTION_TIMEOUT} seconds"
+                    )
                     result["timeout"] = True
                 elif exec_exception:
                     result["success"] = False

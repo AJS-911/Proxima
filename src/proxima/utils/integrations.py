@@ -552,8 +552,6 @@ class SystemResourceIntegration(ExternalIntegration):
         return True, "Resources sufficient for execution"
 
 
-
-
 # =============================================================================
 # STORAGE INTEGRATION
 # =============================================================================
@@ -635,6 +633,7 @@ class StorageIntegration(ExternalIntegration):
 
         # Local filesystem storage (always available)
         import os
+
         local_path = os.path.expanduser("~/.proxima/results")
         os.makedirs(local_path, exist_ok=True)
 
@@ -650,11 +649,12 @@ class StorageIntegration(ExternalIntegration):
 
         # Get free space
         try:
-            if hasattr(os, 'statvfs'):
+            if hasattr(os, "statvfs"):
                 stat = os.statvfs(local_path)
                 free_space_mb = (stat.f_frsize * stat.f_bavail) // (1024 * 1024)
             else:
                 import shutil
+
                 total, used, free = shutil.disk_usage(local_path)
                 free_space_mb = free // (1024 * 1024)
         except Exception:
@@ -675,6 +675,7 @@ class StorageIntegration(ExternalIntegration):
         if s3_bucket:
             try:
                 import boto3  # noqa: F401
+
                 backends["s3"] = StorageInfo(
                     name="s3",
                     storage_type="s3",
@@ -692,6 +693,7 @@ class StorageIntegration(ExternalIntegration):
         if gcs_bucket:
             try:
                 from google.cloud import storage as gcs  # noqa: F401
+
                 backends["gcs"] = StorageInfo(
                     name="gcs",
                     storage_type="gcs",
@@ -709,6 +711,7 @@ class StorageIntegration(ExternalIntegration):
         if azure_container:
             try:
                 from azure.storage.blob import BlobServiceClient  # noqa: F401
+
                 backends["azure"] = StorageInfo(
                     name="azure",
                     storage_type="azure",
@@ -734,7 +737,9 @@ class StorageIntegration(ExternalIntegration):
         """Get list of available storage backend names."""
         return [k for k, v in self._backends.items() if v.is_available]
 
-    async def save_result(self, execution_id: str, data: dict[str, Any], backend: str | None = None) -> str:
+    async def save_result(
+        self, execution_id: str, data: dict[str, Any], backend: str | None = None
+    ) -> str:
         """Save execution result to storage.
 
         Args:
@@ -750,10 +755,13 @@ class StorageIntegration(ExternalIntegration):
 
         storage = self.get_backend(backend)
         if not storage or not storage.is_available:
-            raise RuntimeError(f"Storage backend '{backend or self._default_backend}' not available")
+            raise RuntimeError(
+                f"Storage backend '{backend or self._default_backend}' not available"
+            )
 
         if storage.storage_type == "local":
             import os
+
             filename = f"{execution_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             filepath = os.path.join(storage.path_or_endpoint, filename)
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -763,7 +771,9 @@ class StorageIntegration(ExternalIntegration):
             return filepath
 
         # For cloud backends, would implement upload logic
-        raise NotImplementedError(f"Cloud storage backend '{storage.storage_type}' save not yet implemented")
+        raise NotImplementedError(
+            f"Cloud storage backend '{storage.storage_type}' save not yet implemented"
+        )
 
     async def load_result(self, path_or_uri: str) -> dict[str, Any]:
         """Load execution result from storage.
@@ -859,6 +869,7 @@ class NotificationIntegration(ExternalIntegration):
     async def _discover_channels(self) -> dict[str, NotificationChannel]:
         """Discover configured notification channels."""
         import os
+
         channels = {}
 
         # Console is always available
@@ -988,9 +999,7 @@ class NotificationIntegration(ExternalIntegration):
 
                 elif channel.channel_type == "email":
                     # Email notification
-                    results[channel_name] = await self._send_email(
-                        title, message, level, metadata
-                    )
+                    results[channel_name] = await self._send_email(title, message, level, metadata)
 
                 else:
                     results[channel_name] = False
@@ -1021,15 +1030,19 @@ class NotificationIntegration(ExternalIntegration):
             }
 
             payload = {
-                "attachments": [{
-                    "color": color_map.get(level, "#2196F3"),
-                    "title": title,
-                    "text": message,
-                    "fields": [
-                        {"title": k, "value": str(v), "short": True}
-                        for k, v in (metadata or {}).items()
-                    ][:10],  # Limit fields
-                }]
+                "attachments": [
+                    {
+                        "color": color_map.get(level, "#2196F3"),
+                        "title": title,
+                        "text": message,
+                        "fields": [
+                            {"title": k, "value": str(v), "short": True}
+                            for k, v in (metadata or {}).items()
+                        ][
+                            :10
+                        ],  # Limit fields
+                    }
+                ]
             }
 
             async with httpx.AsyncClient() as client:
@@ -1161,7 +1174,6 @@ class NotificationIntegration(ExternalIntegration):
                 "backend": backend or "auto",
             },
         )
-
 
 
 # =============================================================================
