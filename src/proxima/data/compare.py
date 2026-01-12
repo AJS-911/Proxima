@@ -807,3 +807,466 @@ def compare_backends(
     """
     comparator = MultiBackendComparator()
     return comparator.compare_sync(adapters, circuit, options, strategy)
+
+
+# ==============================================================================
+# Step 4.2: Backend Comparison Matrix
+# ==============================================================================
+
+
+@dataclass
+class BackendCapabilityEntry:
+    """Entry in the backend comparison matrix."""
+
+    name: str
+    supports_state_vector: bool = True
+    supports_density_matrix: bool = False
+    supports_gpu: bool = False
+    is_cpu_optimized: bool = False
+    supports_noise: bool = False
+    max_qubits: int = 25
+    use_case: str = "General-purpose"
+    performance_tier: str = "standard"  # "standard", "high", "very-high"
+    memory_efficiency: str = "standard"  # "low", "standard", "high"
+
+
+class BackendComparisonMatrix:
+    """
+    Step 4.2: Backend Comparison Matrix for unified backend selection.
+
+    Provides comparison data across all supported backends including:
+    - LRET: Custom rank-reduction
+    - Cirq: Google's framework
+    - Qiskit Aer: IBM's feature-rich simulator
+    - QuEST: High-performance C++ with GPU
+    - cuQuantum: NVIDIA GPU-accelerated
+    - qsim: Google's CPU-optimized simulator
+
+    Comparison Dimensions:
+    | Backend   | SV | DM | GPU | CPU Opt | Noise | Max Qubits | Use Case                    |
+    |-----------|----|----|-----|---------|-------|------------|-----------------------------|
+    | LRET      |   |   |    |        |      | 15         | Custom rank-reduction       |
+    | Cirq      |   |   |    |        |      | 20         | General-purpose             |
+    | Qiskit Aer|   |   |    |        |      | 30         | Qiskit ecosystem            |
+    | QuEST     |   |   |    |        |      | 30         | High-performance research   |
+    | cuQuantum |   |   |    |        |      | 35+        | GPU-accelerated large SV    |
+    | qsim      |   |   |    |       |      | 35+        | CPU-optimized large SV      |
+    """
+
+    # Static comparison matrix
+    MATRIX: dict[str, BackendCapabilityEntry] = {
+        "lret": BackendCapabilityEntry(
+            name="lret",
+            supports_state_vector=True,
+            supports_density_matrix=True,
+            supports_gpu=False,
+            is_cpu_optimized=False,
+            supports_noise=True,
+            max_qubits=15,
+            use_case="Custom rank-reduction for noisy circuits",
+            performance_tier="standard",
+            memory_efficiency="high",  # Rank-reduced representation
+        ),
+        "cirq": BackendCapabilityEntry(
+            name="cirq",
+            supports_state_vector=True,
+            supports_density_matrix=True,
+            supports_gpu=False,
+            is_cpu_optimized=False,
+            supports_noise=True,
+            max_qubits=20,
+            use_case="General-purpose simulation",
+            performance_tier="standard",
+            memory_efficiency="standard",
+        ),
+        "qiskit": BackendCapabilityEntry(
+            name="qiskit",
+            supports_state_vector=True,
+            supports_density_matrix=True,
+            supports_gpu=False,
+            is_cpu_optimized=False,
+            supports_noise=True,
+            max_qubits=30,
+            use_case="Qiskit ecosystem integration",
+            performance_tier="standard",
+            memory_efficiency="standard",
+        ),
+        "quest": BackendCapabilityEntry(
+            name="quest",
+            supports_state_vector=True,
+            supports_density_matrix=True,
+            supports_gpu=True,
+            is_cpu_optimized=True,
+            supports_noise=True,
+            max_qubits=30,
+            use_case="High-performance research simulation",
+            performance_tier="high",
+            memory_efficiency="standard",
+        ),
+        "cuquantum": BackendCapabilityEntry(
+            name="cuquantum",
+            supports_state_vector=True,
+            supports_density_matrix=False,
+            supports_gpu=True,
+            is_cpu_optimized=False,
+            supports_noise=False,
+            max_qubits=35,
+            use_case="GPU-accelerated large state vector",
+            performance_tier="very-high",
+            memory_efficiency="low",  # GPU memory limited
+        ),
+        "qsim": BackendCapabilityEntry(
+            name="qsim",
+            supports_state_vector=True,
+            supports_density_matrix=False,
+            supports_gpu=False,
+            is_cpu_optimized=True,
+            supports_noise=False,
+            max_qubits=35,
+            use_case="CPU-optimized large state vector",
+            performance_tier="very-high",
+            memory_efficiency="standard",
+        ),
+    }
+
+    @classmethod
+    def get_entry(cls, backend_name: str) -> BackendCapabilityEntry | None:
+        """Get capability entry for a backend."""
+        return cls.MATRIX.get(backend_name.lower())
+
+    @classmethod
+    def list_all(cls) -> list[BackendCapabilityEntry]:
+        """List all backend entries."""
+        return list(cls.MATRIX.values())
+
+    @classmethod
+    def get_backends_for_simulation_type(
+        cls,
+        state_vector: bool = True,
+        density_matrix: bool = False,
+    ) -> list[str]:
+        """Get backends supporting specified simulation type."""
+        results = []
+        for name, entry in cls.MATRIX.items():
+            if state_vector and not entry.supports_state_vector:
+                continue
+            if density_matrix and not entry.supports_density_matrix:
+                continue
+            results.append(name)
+        return results
+
+    @classmethod
+    def get_gpu_backends(cls) -> list[str]:
+        """Get backends with GPU support."""
+        return [name for name, entry in cls.MATRIX.items() if entry.supports_gpu]
+
+    @classmethod
+    def get_cpu_optimized_backends(cls) -> list[str]:
+        """Get CPU-optimized backends."""
+        return [name for name, entry in cls.MATRIX.items() if entry.is_cpu_optimized]
+
+    @classmethod
+    def get_backends_supporting_noise(cls) -> list[str]:
+        """Get backends supporting noise simulation."""
+        return [name for name, entry in cls.MATRIX.items() if entry.supports_noise]
+
+    @classmethod
+    def get_backends_for_qubit_count(cls, qubit_count: int) -> list[str]:
+        """Get backends that can handle specified qubit count."""
+        return [
+            name for name, entry in cls.MATRIX.items()
+            if entry.max_qubits >= qubit_count
+        ]
+
+    @classmethod
+    def compare(
+        cls,
+        backend_a: str,
+        backend_b: str,
+    ) -> dict[str, dict[str, Any]]:
+        """Compare two backends side by side."""
+        entry_a = cls.MATRIX.get(backend_a.lower())
+        entry_b = cls.MATRIX.get(backend_b.lower())
+
+        if not entry_a or not entry_b:
+            return {}
+
+        comparison = {
+            "state_vector": {
+                backend_a: entry_a.supports_state_vector,
+                backend_b: entry_b.supports_state_vector,
+            },
+            "density_matrix": {
+                backend_a: entry_a.supports_density_matrix,
+                backend_b: entry_b.supports_density_matrix,
+            },
+            "gpu_support": {
+                backend_a: entry_a.supports_gpu,
+                backend_b: entry_b.supports_gpu,
+            },
+            "cpu_optimized": {
+                backend_a: entry_a.is_cpu_optimized,
+                backend_b: entry_b.is_cpu_optimized,
+            },
+            "noise_support": {
+                backend_a: entry_a.supports_noise,
+                backend_b: entry_b.supports_noise,
+            },
+            "max_qubits": {
+                backend_a: entry_a.max_qubits,
+                backend_b: entry_b.max_qubits,
+            },
+            "use_case": {
+                backend_a: entry_a.use_case,
+                backend_b: entry_b.use_case,
+            },
+            "performance_tier": {
+                backend_a: entry_a.performance_tier,
+                backend_b: entry_b.performance_tier,
+            },
+        }
+        return comparison
+
+    @classmethod
+    def get_recommendation(
+        cls,
+        qubit_count: int,
+        needs_density_matrix: bool = False,
+        needs_noise: bool = False,
+        gpu_available: bool = False,
+        prefer_performance: bool = True,
+    ) -> tuple[str, str]:
+        """Get recommended backend based on requirements.
+
+        Returns:
+            Tuple of (backend_name, reason)
+        """
+        # Filter by requirements
+        candidates = []
+        for name, entry in cls.MATRIX.items():
+            # Check qubit capacity
+            if entry.max_qubits < qubit_count:
+                continue
+            # Check density matrix support
+            if needs_density_matrix and not entry.supports_density_matrix:
+                continue
+            # Check noise support
+            if needs_noise and not entry.supports_noise:
+                continue
+            candidates.append((name, entry))
+
+        if not candidates:
+            return ("qiskit", "Fallback - no backend meets all requirements")
+
+        # Score candidates
+        scored = []
+        for name, entry in candidates:
+            score = 0.0
+
+            # Performance scoring
+            if entry.performance_tier == "very-high":
+                score += 1.0
+            elif entry.performance_tier == "high":
+                score += 0.7
+            else:
+                score += 0.4
+
+            # GPU bonus if available
+            if gpu_available and entry.supports_gpu:
+                score += 0.5
+                if qubit_count > 25:
+                    score += 0.3  # Extra bonus for large circuits
+
+            # CPU optimization bonus when no GPU
+            if not gpu_available and entry.is_cpu_optimized:
+                score += 0.3
+
+            # Large circuit handling
+            if qubit_count > 25:
+                if entry.max_qubits >= 35:
+                    score += 0.2
+
+            scored.append((name, entry, score))
+
+        # Sort by score
+        scored.sort(key=lambda x: x[2], reverse=True)
+        winner_name, winner_entry, winner_score = scored[0]
+
+        # Generate reason
+        reasons = []
+        if winner_entry.supports_gpu and gpu_available:
+            reasons.append("GPU acceleration available")
+        if winner_entry.is_cpu_optimized:
+            reasons.append("CPU-optimized")
+        if winner_entry.performance_tier == "very-high":
+            reasons.append("highest performance tier")
+        if winner_entry.max_qubits >= qubit_count + 5:
+            reasons.append(f"supports up to {winner_entry.max_qubits} qubits")
+
+        reason = f"Best for {qubit_count}-qubit circuit: " + ", ".join(reasons) if reasons else winner_entry.use_case
+
+        return (winner_name, reason)
+
+    @classmethod
+    def to_markdown_table(cls) -> str:
+        """Generate markdown table of backend comparison."""
+        lines = [
+            "| Backend | SV | DM | GPU | CPU Opt | Noise | Max Qubits | Use Case |",
+            "|---------|----|----|-----|---------|-------|------------|----------|",
+        ]
+
+        for name, entry in cls.MATRIX.items():
+            sv = "" if entry.supports_state_vector else ""
+            dm = "" if entry.supports_density_matrix else ""
+            gpu = "" if entry.supports_gpu else ""
+            cpu = "" if entry.is_cpu_optimized else ""
+            noise = "" if entry.supports_noise else ""
+
+            lines.append(
+                f"| {name:7} | {sv:2} | {dm:2} | {gpu:3} | {cpu:7} | {noise:5} | "
+                f"{entry.max_qubits:10} | {entry.use_case} |"
+            )
+
+        return "\n".join(lines)
+
+
+# ==============================================================================
+# Step 4.2: Performance Comparison Metrics
+# ==============================================================================
+
+
+@dataclass
+class PerformanceMetrics:
+    """Performance metrics for backend comparison."""
+
+    backend_name: str
+    execution_time_ms: float
+    memory_peak_mb: float
+    cpu_utilization_percent: float = 0.0
+    gpu_utilization_percent: float = 0.0
+    parallel_efficiency: float = 1.0  # Ratio of actual speedup to ideal speedup
+
+
+@dataclass
+class AccuracyMetrics:
+    """Accuracy metrics for backend comparison."""
+
+    backend_name: str
+    state_vector_fidelity: float = 1.0  # 0-1
+    measurement_distribution_similarity: float = 1.0  # 0-1
+    numerical_stability_score: float = 1.0  # 0-1
+
+
+class BackendPerformanceTracker:
+    """
+    Step 4.2: Track and compare backend performance over time.
+
+    Maintains a history of:
+    - Execution times per circuit size
+    - Memory usage patterns
+    - Success rates
+    - Accuracy comparisons
+    """
+
+    def __init__(self) -> None:
+        self._history: dict[str, list[PerformanceMetrics]] = {}
+        self._accuracy_history: dict[str, list[AccuracyMetrics]] = {}
+
+    def record_execution(
+        self,
+        backend_name: str,
+        execution_time_ms: float,
+        memory_peak_mb: float,
+        cpu_utilization: float = 0.0,
+        gpu_utilization: float = 0.0,
+    ) -> None:
+        """Record a backend execution for performance tracking."""
+        if backend_name not in self._history:
+            self._history[backend_name] = []
+
+        self._history[backend_name].append(
+            PerformanceMetrics(
+                backend_name=backend_name,
+                execution_time_ms=execution_time_ms,
+                memory_peak_mb=memory_peak_mb,
+                cpu_utilization_percent=cpu_utilization,
+                gpu_utilization_percent=gpu_utilization,
+            )
+        )
+
+    def record_accuracy(
+        self,
+        backend_name: str,
+        fidelity: float,
+        distribution_similarity: float = 1.0,
+        numerical_stability: float = 1.0,
+    ) -> None:
+        """Record accuracy metrics for a backend."""
+        if backend_name not in self._accuracy_history:
+            self._accuracy_history[backend_name] = []
+
+        self._accuracy_history[backend_name].append(
+            AccuracyMetrics(
+                backend_name=backend_name,
+                state_vector_fidelity=fidelity,
+                measurement_distribution_similarity=distribution_similarity,
+                numerical_stability_score=numerical_stability,
+            )
+        )
+
+    def get_average_execution_time(self, backend_name: str) -> float:
+        """Get average execution time for a backend."""
+        history = self._history.get(backend_name, [])
+        if not history:
+            return 0.0
+        return sum(m.execution_time_ms for m in history) / len(history)
+
+    def get_average_memory_usage(self, backend_name: str) -> float:
+        """Get average memory usage for a backend."""
+        history = self._history.get(backend_name, [])
+        if not history:
+            return 0.0
+        return sum(m.memory_peak_mb for m in history) / len(history)
+
+    def get_success_rate(self, backend_name: str) -> float:
+        """Get success rate (placeholder - would track failures in production)."""
+        # In production, this would track actual success/failure counts
+        return 0.95 if backend_name in self._history else 0.8
+
+    def get_performance_ranking(self) -> list[tuple[str, float]]:
+        """Get backends ranked by performance (lower time is better)."""
+        rankings = []
+        for name in self._history:
+            avg_time = self.get_average_execution_time(name)
+            if avg_time > 0:
+                rankings.append((name, avg_time))
+        return sorted(rankings, key=lambda x: x[1])
+
+    def compare_backends(
+        self,
+        backend_a: str,
+        backend_b: str,
+    ) -> dict[str, Any]:
+        """Compare two backends based on recorded history."""
+        time_a = self.get_average_execution_time(backend_a)
+        time_b = self.get_average_execution_time(backend_b)
+        mem_a = self.get_average_memory_usage(backend_a)
+        mem_b = self.get_average_memory_usage(backend_b)
+
+        time_ratio = time_a / time_b if time_b > 0 else 0.0
+        mem_ratio = mem_a / mem_b if mem_b > 0 else 0.0
+
+        return {
+            "execution_time": {
+                backend_a: time_a,
+                backend_b: time_b,
+                "ratio": time_ratio,
+                "faster": backend_a if time_a < time_b else backend_b,
+            },
+            "memory_usage": {
+                backend_a: mem_a,
+                backend_b: mem_b,
+                "ratio": mem_ratio,
+                "more_efficient": backend_a if mem_a < mem_b else backend_b,
+            },
+        }

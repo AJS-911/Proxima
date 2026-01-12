@@ -1,4 +1,4 @@
-"""Backend registry for managing available backends."""
+﻿"""Backend registry for managing available backends."""
 
 from __future__ import annotations
 
@@ -9,6 +9,9 @@ from proxima.backends.base import BaseBackendAdapter, Capabilities
 from proxima.backends.cirq_adapter import CirqBackendAdapter
 from proxima.backends.lret import LRETBackendAdapter
 from proxima.backends.qiskit_adapter import QiskitBackendAdapter
+from proxima.backends.quest_adapter import QuestBackendAdapter
+from proxima.backends.cuquantum_adapter import CuQuantumAdapter
+from proxima.backends.qsim_adapter import QsimAdapter  # Step 3.5: qsim added
 
 
 @dataclass
@@ -48,6 +51,9 @@ class BackendRegistry:
             LRETBackendAdapter,
             CirqBackendAdapter,
             QiskitBackendAdapter,
+            QuestBackendAdapter,
+            CuQuantumAdapter,  # Step 2.3: cuQuantum added to registry
+            QsimAdapter,  # Step 3.5: qsim added to registry
         ]
 
         for adapter_cls in candidates:
@@ -117,6 +123,9 @@ class BackendRegistry:
             "lretbackendadapter": ["lret"],
             "cirqbackendadapter": ["cirq"],
             "qiskitbackendadapter": ["qiskit", "qiskit_aer"],
+            "questbackendadapter": ["pyQuEST"],
+            "cuquantumadapter": ["qiskit", "qiskit_aer", "cuquantum"],  # cuQuantum dependencies
+            "qsimadapter": ["cirq", "qsimcirq"],  # Step 3.5: qsim dependencies
         }
         missing = []
         for dep in dependency_map.get(adapter_cls.__name__.lower(), []):
@@ -158,6 +167,55 @@ class BackendRegistry:
         if not status:
             raise KeyError(f"Backend '{name}' not registered")
         return status
+
+    # ==========================================================================
+    # Step 2.3: GPU-aware backend selection helpers
+    # ==========================================================================
+
+    def get_gpu_backends(self) -> list[str]:
+        """Return list of GPU-enabled backends."""
+        gpu_backends = []
+        for name, status in self._statuses.items():
+            if status.available and status.capabilities:
+                if status.capabilities.supports_gpu:
+                    gpu_backends.append(name)
+        return gpu_backends
+
+    def get_best_backend_for_circuit(
+        self,
+        qubit_count: int,
+        simulation_type: str = "state_vector",
+        prefer_gpu: bool = True,
+    ) -> str | None:
+        """Get best available backend for given circuit requirements.
+
+        Args:
+            qubit_count: Number of qubits in circuit
+            simulation_type: "state_vector" or "density_matrix"
+            prefer_gpu: Whether to prefer GPU backends
+
+        Returns:
+            Name of best backend, or None if none suitable
+        """
+        # Priority order based on simulation type and GPU preference
+        # Step 3.5: qsim included in priority lists
+        if simulation_type == "state_vector":
+            if prefer_gpu:
+                priority = ["cuquantum", "quest", "qsim", "qiskit", "cirq"]
+            else:
+                priority = ["qsim", "quest", "qiskit", "cirq"]
+        elif simulation_type == "density_matrix":
+            priority = ["quest", "cirq", "qiskit", "lret"]
+        else:
+            priority = ["qsim", "qiskit", "cirq", "quest"]
+
+        for backend_name in priority:
+            status = self._statuses.get(backend_name)
+            if status and status.available and status.capabilities:
+                if qubit_count <= status.capabilities.max_qubits:
+                    return backend_name
+
+        return None
 
 
 backend_registry = BackendRegistry()
