@@ -151,7 +151,7 @@ class QsimError(BackendError):
         super().__init__(
             message=message,
             backend_name="qsim",
-            error_code=error_code,
+            code=error_code,
             details=details or {},
         )
 
@@ -166,7 +166,7 @@ class QsimInstallationError(QsimError):
         }
         super().__init__(
             message=f"qsim dependency missing: {missing_component}. {details['install_hint']}",
-            error_code=BackendErrorCode.NOT_INSTALLED,
+            code=BackendErrorCode.NOT_INSTALLED,
             details=details,
         )
 
@@ -191,7 +191,7 @@ class QsimGateError(QsimError):
         }
         super().__init__(
             message=f"Circuit contains unsupported gates: {', '.join(unsupported_gates)}. {suggestions}",
-            error_code=BackendErrorCode.CIRCUIT_INVALID,
+            code=BackendErrorCode.CIRCUIT_INVALID,
             details=details,
         )
 

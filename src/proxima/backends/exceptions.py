@@ -26,6 +26,10 @@ class BackendErrorCode(str, Enum):
     MEMORY_EXCEEDED = "memory_exceeded"
     RESOURCE_EXHAUSTED = "resource_exhausted"
 
+    # Hardware errors
+    HARDWARE_UNAVAILABLE = "hardware_unavailable"
+    CIRCUIT_INVALID = "circuit_invalid"
+
     # Execution errors
     EXECUTION_FAILED = "execution_failed"
     SIMULATION_ERROR = "simulation_error"

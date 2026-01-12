@@ -1,4 +1,4 @@
-﻿"""cuQuantum backend adapter for GPU-accelerated state vector simulations.
+"""cuQuantum backend adapter for GPU-accelerated state vector simulations.
 
 This adapter provides GPU-accelerated quantum circuit simulation using NVIDIA's
 cuQuantum SDK through Qiskit Aer. cuQuantum is NVIDIA's library for high-performance
@@ -147,7 +147,7 @@ class CuQuantumError(BackendError):
         super().__init__(
             message=message,
             backend_name="cuquantum",
-            error_code=error_code,
+            code=error_code,
             details=details or {},
         )
 
@@ -162,7 +162,7 @@ class CuQuantumInstallationError(CuQuantumError):
         }
         super().__init__(
             message=f"cuQuantum dependency missing: {missing_component}. {details['install_hint']}",
-            error_code=BackendErrorCode.NOT_INSTALLED,
+            code=BackendErrorCode.NOT_INSTALLED,
             details=details,
         )
 
@@ -192,7 +192,7 @@ class CuQuantumGPUError(CuQuantumError):
         }
         super().__init__(
             message=f"GPU error on device {device_id}: {message}",
-            error_code=BackendErrorCode.HARDWARE_UNAVAILABLE,
+            code=BackendErrorCode.HARDWARE_UNAVAILABLE,
             details=details,
         )
 
