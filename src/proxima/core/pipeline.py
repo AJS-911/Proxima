@@ -453,41 +453,295 @@ class ConsentHandler(PipelineHandler):
 
 
 class ExecutionHandler(PipelineHandler):
-    """Execute simulation on selected backends."""
+    """Execute simulation on selected backends with parallel execution support."""
 
-    def __init__(self, backend_executor: Callable | None = None):
+    def __init__(
+        self,
+        backend_executor: Callable | None = None,
+        max_parallel: int | None = None,
+        timeout_per_backend: float | None = None,
+        enable_parallel: bool = True,
+    ):
+        """Initialize execution handler.
+        
+        Args:
+            backend_executor: Custom executor function(backend, ctx) -> result
+            max_parallel: Maximum parallel executions (None = auto-detect)
+            timeout_per_backend: Timeout per backend in seconds
+            enable_parallel: Whether to enable parallel execution
+        """
         super().__init__(PipelineStage.EXECUTING)
         self.backend_executor = backend_executor
+        self.max_parallel = max_parallel
+        self.timeout_per_backend = timeout_per_backend
+        self.enable_parallel = enable_parallel
+        self._cancellation_event: asyncio.Event | None = None
 
-    async def execute(self, ctx: PipelineContext) -> StageResult:
-        start = time.time()
-        try:
-            results = {}
+    def set_cancellation_event(self, event: asyncio.Event) -> None:
+        """Set cancellation event for graceful shutdown."""
+        self._cancellation_event = event
 
-            for backend in ctx.selected_backends:
-                backend_start = time.time()
-
+    async def _execute_single_backend(
+        self,
+        backend: str,
+        ctx: PipelineContext,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> tuple[str, dict]:
+        """Execute on a single backend with optional semaphore control.
+        
+        Args:
+            backend: Backend name
+            ctx: Pipeline context
+            semaphore: Optional semaphore for concurrency control
+            
+        Returns:
+            Tuple of (backend_name, result_dict)
+        """
+        async def do_execute() -> dict:
+            backend_start = time.time()
+            
+            try:
+                # Check for cancellation
+                if self._cancellation_event and self._cancellation_event.is_set():
+                    return {
+                        "backend": backend,
+                        "status": "cancelled",
+                        "error": "Execution cancelled",
+                        "duration_ms": 0,
+                    }
+                
                 if self.backend_executor:
                     # Use provided executor
-                    result = await self.backend_executor(backend, ctx)
+                    if asyncio.iscoroutinefunction(self.backend_executor):
+                        result = await self.backend_executor(backend, ctx)
+                    else:
+                        loop = asyncio.get_event_loop()
+                        result = await loop.run_in_executor(
+                            None, self.backend_executor, backend, ctx
+                        )
                 else:
-                    # Simulate execution
-                    await asyncio.sleep(0.1)  # Simulate work
+                    # Simulate execution with realistic timing
+                    await asyncio.sleep(0.1)
                     result = {
                         "backend": backend,
                         "status": "success",
                         "counts": {"00": 500, "11": 500},
-                        "duration_ms": (time.time() - backend_start) * 1000,
                     }
+                
+                result["duration_ms"] = (time.time() - backend_start) * 1000
+                return result
+                
+            except Exception as e:
+                return {
+                    "backend": backend,
+                    "status": "error",
+                    "error": str(e),
+                    "duration_ms": (time.time() - backend_start) * 1000,
+                }
+        
+        # Apply semaphore if provided
+        if semaphore:
+            async with semaphore:
+                if self.timeout_per_backend:
+                    try:
+                        result = await asyncio.wait_for(
+                            do_execute(),
+                            timeout=self.timeout_per_backend,
+                        )
+                    except asyncio.TimeoutError:
+                        result = {
+                            "backend": backend,
+                            "status": "timeout",
+                            "error": f"Timed out after {self.timeout_per_backend}s",
+                            "duration_ms": self.timeout_per_backend * 1000,
+                        }
+                else:
+                    result = await do_execute()
+        else:
+            if self.timeout_per_backend:
+                try:
+                    result = await asyncio.wait_for(
+                        do_execute(),
+                        timeout=self.timeout_per_backend,
+                    )
+                except asyncio.TimeoutError:
+                    result = {
+                        "backend": backend,
+                        "status": "timeout",
+                        "error": f"Timed out after {self.timeout_per_backend}s",
+                        "duration_ms": self.timeout_per_backend * 1000,
+                    }
+            else:
+                result = await do_execute()
+        
+        return backend, result
 
-                results[backend] = result
+    async def _execute_parallel(
+        self,
+        backends: list[str],
+        ctx: PipelineContext,
+    ) -> dict[str, Any]:
+        """Execute on multiple backends in parallel with resource management.
+        
+        Args:
+            backends: List of backend names
+            ctx: Pipeline context
+            
+        Returns:
+            Dict mapping backend name to result
+        """
+        # Determine concurrency limit
+        max_concurrent = self.max_parallel
+        if max_concurrent is None:
+            try:
+                import psutil
+                available_gb = psutil.virtual_memory().available / (1024**3)
+                # ~2GB per backend, cap at number of backends
+                max_concurrent = max(1, min(len(backends), int(available_gb / 2)))
+            except ImportError:
+                max_concurrent = min(4, len(backends))
+        
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        # Create tasks for all backends
+        tasks = [
+            self._execute_single_backend(backend, ctx, semaphore)
+            for backend in backends
+        ]
+        
+        # Execute with gather, returning exceptions as results
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Process results
+        results: dict[str, Any] = {}
+        for idx, result in enumerate(task_results):
+            backend = backends[idx]
+            if isinstance(result, Exception):
+                results[backend] = {
+                    "backend": backend,
+                    "status": "error",
+                    "error": str(result),
+                    "duration_ms": 0,
+                }
+            else:
+                backend_name, backend_result = result
+                results[backend_name] = backend_result
+        
+        return results
 
+    async def _execute_sequential(
+        self,
+        backends: list[str],
+        ctx: PipelineContext,
+    ) -> dict[str, Any]:
+        """Execute on backends sequentially with cleanup between.
+        
+        Args:
+            backends: List of backend names
+            ctx: Pipeline context
+            
+        Returns:
+            Dict mapping backend name to result
+        """
+        import gc
+        
+        results: dict[str, Any] = {}
+        
+        for backend in backends:
+            # Check for cancellation
+            if self._cancellation_event and self._cancellation_event.is_set():
+                results[backend] = {
+                    "backend": backend,
+                    "status": "cancelled",
+                    "error": "Execution cancelled",
+                    "duration_ms": 0,
+                }
+                continue
+            
+            _, result = await self._execute_single_backend(backend, ctx)
+            results[backend] = result
+            
+            # Cleanup between executions
+            gc.collect()
+        
+        return results
+
+    async def execute(self, ctx: PipelineContext) -> StageResult:
+        """Execute simulation on selected backends.
+        
+        Automatically chooses parallel or sequential execution based on:
+        - enable_parallel setting
+        - Number of backends
+        - Available system resources
+        """
+        start = time.time()
+        try:
+            backends = ctx.selected_backends
+            
+            if not backends:
+                return StageResult(
+                    stage=self.stage,
+                    success=False,
+                    error="No backends selected for execution",
+                    duration_ms=(time.time() - start) * 1000,
+                )
+            
+            # Decide execution strategy
+            use_parallel = (
+                self.enable_parallel
+                and len(backends) > 1
+                and (ctx.plan or {}).get("parallel", True)
+            )
+            
+            if use_parallel:
+                logger.debug(
+                    "parallel_execution",
+                    backends=backends,
+                    max_parallel=self.max_parallel,
+                )
+                results = await self._execute_parallel(backends, ctx)
+            else:
+                logger.debug("sequential_execution", backends=backends)
+                results = await self._execute_sequential(backends, ctx)
+            
             ctx.backend_results = results
-
+            
+            # Determine success based on results
+            success_count = sum(
+                1 for r in results.values() if r.get("status") == "success"
+            )
+            total_count = len(results)
+            
+            if success_count == 0:
+                return StageResult(
+                    stage=self.stage,
+                    success=False,
+                    data=results,
+                    error=f"All {total_count} backends failed",
+                    duration_ms=(time.time() - start) * 1000,
+                )
+            elif success_count < total_count:
+                # Partial success
+                return StageResult(
+                    stage=self.stage,
+                    success=True,  # Continue pipeline with partial results
+                    data=results,
+                    error=f"{total_count - success_count} of {total_count} backends failed",
+                    duration_ms=(time.time() - start) * 1000,
+                )
+            else:
+                return StageResult(
+                    stage=self.stage,
+                    success=True,
+                    data=results,
+                    duration_ms=(time.time() - start) * 1000,
+                )
+                
+        except asyncio.CancelledError:
             return StageResult(
                 stage=self.stage,
-                success=True,
-                data=results,
+                success=False,
+                error="Execution cancelled",
                 duration_ms=(time.time() - start) * 1000,
             )
         except Exception as e:
@@ -838,7 +1092,21 @@ class DataFlowPipeline:
         auto_approve_consent: bool = False,
         export_dir: str = "./results",
         memory_threshold_mb: int = 1024,
+        default_timeout: float | None = None,
+        max_retries: int = 0,
+        retry_delay: float = 1.0,
     ):
+        """Initialize the data flow pipeline.
+        
+        Args:
+            require_consent: Whether to require user consent.
+            auto_approve_consent: Automatically approve consent requests.
+            export_dir: Directory for exported results.
+            memory_threshold_mb: Memory threshold for resource checks.
+            default_timeout: Default timeout for stages in seconds.
+            max_retries: Maximum retries for failed stages (0 = no retry).
+            retry_delay: Delay between retries in seconds.
+        """
         # Configure handlers
         self.handlers: dict[PipelineStage, PipelineHandler] = {
             PipelineStage.PARSING: ParseHandler(),
@@ -865,6 +1133,25 @@ class DataFlowPipeline:
             PipelineStage.EXPORTING,
         ]
 
+        # Stage-specific timeouts (override default)
+        self._stage_timeouts: dict[PipelineStage, float] = {}
+        self._default_timeout = default_timeout
+        
+        # Retry configuration
+        self._max_retries = max_retries
+        self._retry_delay = retry_delay
+        self._retry_stages: set[PipelineStage] = {
+            PipelineStage.EXECUTING,  # Execution can be retried
+            PipelineStage.EXPORTING,  # Export can be retried
+        }
+        
+        # Cancellation support
+        self._cancellation_event: asyncio.Event | None = None
+        self._is_running = False
+        
+        # Progress tracking
+        self._progress_callback: Callable[[int, int, PipelineStage, str], None] | None = None
+
         # Callbacks
         self._on_stage_start: (
             Callable[[PipelineStage, PipelineContext], None] | None
@@ -876,6 +1163,15 @@ class DataFlowPipeline:
         self._on_rollback: (
             Callable[[PipelineStage, str, PipelineContext], None] | None
         ) = None
+        
+        # Async event callbacks
+        self._on_stage_start_async: (
+            Callable[[PipelineStage, PipelineContext], Any] | None
+        ) = None
+        self._on_stage_complete_async: (
+            Callable[[StageResult, PipelineContext], Any] | None
+        ) = None
+        self._on_pipeline_complete_async: Callable[[PipelineContext], Any] | None = None
 
         # Rollback configuration
         self._enable_rollback = True
@@ -884,11 +1180,56 @@ class DataFlowPipeline:
             False  # If True, automatically rollback to last checkpoint on failure
         )
 
+    def set_stage_timeout(self, stage: PipelineStage, timeout: float) -> None:
+        """Set timeout for a specific stage.
+        
+        Args:
+            stage: The pipeline stage.
+            timeout: Timeout in seconds.
+        """
+        self._stage_timeouts[stage] = timeout
+
+    def set_retry_stages(self, stages: set[PipelineStage]) -> None:
+        """Set which stages can be retried on failure.
+        
+        Args:
+            stages: Set of stages that can be retried.
+        """
+        self._retry_stages = stages
+
+    def set_cancellation_event(self, event: asyncio.Event) -> None:
+        """Set cancellation event for graceful shutdown.
+        
+        Args:
+            event: Event to signal cancellation.
+        """
+        self._cancellation_event = event
+
+    def is_running(self) -> bool:
+        """Check if pipeline is currently running."""
+        return self._is_running
+
+    def on_progress(
+        self, callback: Callable[[int, int, PipelineStage, str], None]
+    ) -> None:
+        """Register progress callback.
+        
+        Args:
+            callback: Callback(current_stage_idx, total_stages, stage, message)
+        """
+        self._progress_callback = callback
+
     def on_stage_start(
         self, callback: Callable[[PipelineStage, PipelineContext], None]
     ) -> None:
         """Register callback for stage start events."""
         self._on_stage_start = callback
+
+    def on_stage_start_async(
+        self, callback: Callable[[PipelineStage, PipelineContext], Any]
+    ) -> None:
+        """Register async callback for stage start events."""
+        self._on_stage_start_async = callback
 
     def on_stage_complete(
         self, callback: Callable[[StageResult, PipelineContext], None]
@@ -896,9 +1237,21 @@ class DataFlowPipeline:
         """Register callback for stage completion events."""
         self._on_stage_complete = callback
 
+    def on_stage_complete_async(
+        self, callback: Callable[[StageResult, PipelineContext], Any]
+    ) -> None:
+        """Register async callback for stage completion events."""
+        self._on_stage_complete_async = callback
+
     def on_pipeline_complete(self, callback: Callable[[PipelineContext], None]) -> None:
         """Register callback for pipeline completion."""
         self._on_pipeline_complete = callback
+
+    def on_pipeline_complete_async(
+        self, callback: Callable[[PipelineContext], Any]
+    ) -> None:
+        """Register async callback for pipeline completion."""
+        self._on_pipeline_complete_async = callback
 
     def set_handler(self, stage: PipelineStage, handler: PipelineHandler) -> None:
         """Replace a stage handler."""
@@ -930,6 +1283,94 @@ class DataFlowPipeline:
         self._enable_rollback = enable
         self._auto_checkpoint = auto_checkpoint
         self._rollback_on_failure = rollback_on_failure
+
+    async def _execute_stage_with_timeout(
+        self,
+        handler: PipelineHandler,
+        ctx: PipelineContext,
+        stage: PipelineStage,
+    ) -> StageResult:
+        """Execute a stage with optional timeout.
+        
+        Args:
+            handler: The stage handler.
+            ctx: Pipeline context.
+            stage: Current stage.
+            
+        Returns:
+            Stage result.
+        """
+        timeout = self._stage_timeouts.get(stage, self._default_timeout)
+        
+        if timeout is None:
+            return await handler.execute(ctx)
+        
+        try:
+            return await asyncio.wait_for(handler.execute(ctx), timeout=timeout)
+        except asyncio.TimeoutError:
+            return StageResult(
+                stage=stage,
+                success=False,
+                error=f"Stage {stage.name} timed out after {timeout}s",
+                duration_ms=timeout * 1000,
+            )
+
+    async def _execute_stage_with_retry(
+        self,
+        handler: PipelineHandler,
+        ctx: PipelineContext,
+        stage: PipelineStage,
+    ) -> StageResult:
+        """Execute a stage with retry logic.
+        
+        Args:
+            handler: The stage handler.
+            ctx: Pipeline context.
+            stage: Current stage.
+            
+        Returns:
+            Stage result.
+        """
+        max_attempts = (
+            self._max_retries + 1
+            if stage in self._retry_stages
+            else 1
+        )
+        
+        last_result: StageResult | None = None
+        
+        for attempt in range(max_attempts):
+            # Check for cancellation
+            if self._cancellation_event and self._cancellation_event.is_set():
+                return StageResult(
+                    stage=stage,
+                    success=False,
+                    error="Pipeline cancelled",
+                    duration_ms=0,
+                )
+            
+            result = await self._execute_stage_with_timeout(handler, ctx, stage)
+            last_result = result
+            
+            if result.success:
+                return result
+            
+            # Retry if not last attempt
+            if attempt < max_attempts - 1:
+                logger.info(
+                    "stage_retry",
+                    stage=stage.name,
+                    attempt=attempt + 1,
+                    max_attempts=max_attempts,
+                    error=result.error,
+                )
+                await asyncio.sleep(self._retry_delay)
+        
+        return last_result or StageResult(
+            stage=stage,
+            success=False,
+            error="Stage failed after all retries",
+        )
 
     async def rollback_to_stage(
         self, ctx: PipelineContext, target_stage: PipelineStage
@@ -1004,7 +1445,7 @@ class DataFlowPipeline:
         **params: Any,
     ) -> PipelineContext:
         """
-        Run the complete pipeline.
+        Run the complete pipeline with full async support.
 
         Args:
             user_input: User's input command/query
@@ -1013,6 +1454,11 @@ class DataFlowPipeline:
         Returns:
             PipelineContext with all results
         """
+        if self._is_running:
+            raise RuntimeError("Pipeline is already running")
+        
+        self._is_running = True
+        
         # Initialize context
         ctx = PipelineContext(
             user_input=user_input,
@@ -1025,26 +1471,55 @@ class DataFlowPipeline:
             input=user_input[:50],
         )
 
+        total_stages = len(self.stage_order)
+
         try:
             # Execute each stage in order
-            for stage in self.stage_order:
+            for stage_idx, stage in enumerate(self.stage_order):
+                # Check for cancellation
+                if self._cancellation_event and self._cancellation_event.is_set():
+                    ctx.current_stage = PipelineStage.ABORTED
+                    logger.warning(
+                        "pipeline_cancelled",
+                        execution_id=ctx.execution_id,
+                        at_stage=stage.name,
+                    )
+                    break
+                
                 handler = self.handlers.get(stage)
                 if not handler:
                     continue
 
-                # Notify stage start
+                # Notify stage start (sync callback)
                 if self._on_stage_start:
                     self._on_stage_start(stage, ctx)
+                
+                # Notify stage start (async callback)
+                if self._on_stage_start_async:
+                    await self._on_stage_start_async(stage, ctx)
+                
+                # Report progress
+                if self._progress_callback:
+                    self._progress_callback(
+                        stage_idx + 1,
+                        total_stages,
+                        stage,
+                        f"Executing {stage.name}...",
+                    )
 
                 logger.debug("stage_starting", stage=stage.name)
 
-                # Execute stage
-                result = await handler.execute(ctx)
+                # Execute stage with retry and timeout support
+                result = await self._execute_stage_with_retry(handler, ctx, stage)
                 ctx.add_stage_result(result)
 
-                # Notify stage complete
+                # Notify stage complete (sync callback)
                 if self._on_stage_complete:
                     self._on_stage_complete(result, ctx)
+                
+                # Notify stage complete (async callback)
+                if self._on_stage_complete_async:
+                    await self._on_stage_complete_async(result, ctx)
 
                 logger.debug(
                     "stage_completed",
@@ -1098,6 +1573,15 @@ class DataFlowPipeline:
                     execution_id=ctx.execution_id,
                     duration_ms=ctx.elapsed_ms,
                 )
+                
+                # Final progress update
+                if self._progress_callback:
+                    self._progress_callback(
+                        total_stages,
+                        total_stages,
+                        PipelineStage.COMPLETED,
+                        "Pipeline completed successfully",
+                    )
 
         except asyncio.CancelledError:
             ctx.current_stage = PipelineStage.ABORTED
@@ -1116,15 +1600,38 @@ class DataFlowPipeline:
             logger.exception("pipeline_error", execution_id=ctx.execution_id)
 
         finally:
+            self._is_running = False
+            
             # Clear checkpoints on successful completion to free memory
             if ctx.current_stage == PipelineStage.COMPLETED:
                 ctx.clear_checkpoints()
                 logger.debug("checkpoints_cleared", execution_id=ctx.execution_id)
 
+            # Call sync completion callback
             if self._on_pipeline_complete:
                 self._on_pipeline_complete(ctx)
+            
+            # Call async completion callback
+            if self._on_pipeline_complete_async:
+                await self._on_pipeline_complete_async(ctx)
 
         return ctx
+
+    async def cancel(self) -> bool:
+        """Cancel a running pipeline gracefully.
+        
+        Returns:
+            True if cancellation was signaled.
+        """
+        if not self._is_running:
+            return False
+        
+        if self._cancellation_event:
+            self._cancellation_event.set()
+            logger.info("pipeline_cancellation_requested")
+            return True
+        
+        return False
 
 
 # =============================================================================

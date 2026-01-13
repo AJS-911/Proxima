@@ -116,17 +116,27 @@ class DisplayController:
     - Update on stage transitions
     - Update on significant progress (10% increments)
     - Batch updates to avoid flicker
+    
+    Edge cases handled:
+    - Rapid consecutive updates are debounced
+    - Updates during paused state are held
+    - Final update is always sent on completion
+    - Thread-safe update queueing
     """
 
     UPDATE_INTERVAL_MS: float = 100.0  # 100ms updates
     PROGRESS_INCREMENT: float = 10.0  # 10% increments
+    MIN_UPDATE_INTERVAL_MS: float = 50.0  # Minimum interval to prevent flicker
+    MAX_PENDING_UPDATES: int = 10  # Maximum pending updates before force flush
 
     def __init__(self) -> None:
         self._callbacks: list[DisplayCallback] = []
         self._last_update_time: float = 0.0
-        self._last_progress_milestone: int = 0  # Last 10% milestone
+        self._last_progress_milestone: int = 0
         self._pending_update: DisplayUpdate | None = None
+        self._pending_count: int = 0
         self._lock = threading.Lock()
+        self._paused: bool = False
 
         # Automatic timer thread
         self._running = False
@@ -135,10 +145,39 @@ class DisplayController:
     def on_update(self, callback: DisplayCallback) -> None:
         """Register callback for display updates."""
         self._callbacks.append(callback)
+        
+    def remove_callback(self, callback: DisplayCallback) -> bool:
+        """Remove a registered callback. Returns True if removed."""
+        try:
+            self._callbacks.remove(callback)
+            return True
+        except ValueError:
+            return False
+
+    def pause(self) -> None:
+        """Pause display updates (updates will be held)."""
+        self._paused = True
+        
+    def resume(self) -> None:
+        """Resume display updates and flush any pending."""
+        self._paused = False
+        self.flush()
 
     def _should_update(self, reason: UpdateReason, progress: float) -> bool:
-        """Determine if update should be sent based on strategy."""
+        """Determine if update should be sent based on strategy.
+        
+        Handles edge cases:
+        - Paused state prevents updates
+        - Completion always triggers update
+        - Stage transitions always trigger update
+        - Respects minimum update interval
+        - Forces update after max pending count
+        """
+        if self._paused and reason not in (UpdateReason.COMPLETION, UpdateReason.STAGE_TRANSITION):
+            return False
+            
         now = time.perf_counter() * 1000  # ms
+        elapsed_since_update = now - self._last_update_time
 
         # Always update for transitions and completion
         if reason in (
@@ -146,11 +185,17 @@ class DisplayController:
             UpdateReason.COMPLETION,
             UpdateReason.MANUAL,
         ):
+            # But respect minimum interval to prevent flicker
+            if elapsed_since_update < self.MIN_UPDATE_INTERVAL_MS and reason == UpdateReason.MANUAL:
+                return False
+            return True
+
+        # Force update if too many pending
+        if self._pending_count >= self.MAX_PENDING_UPDATES:
             return True
 
         # Check 100ms interval for timer ticks
         if reason == UpdateReason.TIMER_TICK:
-            elapsed_since_update = now - self._last_update_time
             if elapsed_since_update >= self.UPDATE_INTERVAL_MS:
                 return True
 
@@ -167,11 +212,13 @@ class DisplayController:
         with self._lock:
             if not self._should_update(update.reason, update.progress_percent):
                 self._pending_update = update  # Hold for batching
+                self._pending_count += 1
                 return False
 
             # Send update
             self._last_update_time = time.perf_counter() * 1000
             self._pending_update = None
+            self._pending_count = 0
 
         # Notify callbacks outside lock
         self._notify(update)
@@ -182,6 +229,7 @@ class DisplayController:
         with self._lock:
             pending = self._pending_update
             self._pending_update = None
+            self._pending_count = 0
 
         if pending:
             self._notify(pending)
@@ -198,6 +246,10 @@ class DisplayController:
         """Reset display state for new execution."""
         with self._lock:
             self._last_update_time = 0.0
+            self._last_progress_milestone = 0
+            self._pending_update = None
+            self._pending_count = 0
+            self._paused = False
             self._last_progress_milestone = 0
             self._pending_update = None
 
@@ -297,22 +349,43 @@ class ProgressTracker:
 
 
 class ETACalculator:
-    """Estimates time remaining based on progress with smoothing.
+    """Estimates time remaining based on progress with improved accuracy.
 
     Features:
-    - ETA calculation from progress rate
-    - Exponential smoothing for stable estimates
+    - ETA calculation from progress rate with multiple algorithms
+    - Adaptive exponential smoothing for stable estimates
     - Stage-aware ETA for multi-stage execution
+    - Historical rate tracking for trend analysis
+    - Confidence scoring for ETA reliability
+    - Burst detection to handle irregular progress
     """
 
-    SMOOTHING_FACTOR: float = 0.3  # EMA smoothing (0-1, higher = more responsive)
+    # Adaptive smoothing: start responsive, become more stable over time
+    INITIAL_SMOOTHING_FACTOR: float = 0.5  # More responsive at start
+    STABLE_SMOOTHING_FACTOR: float = 0.2  # More stable after warmup
+    WARMUP_SAMPLES: int = 5  # Number of samples before switching to stable smoothing
+    
+    # Rate history for trend analysis
+    HISTORY_SIZE: int = 20  # Keep last N rate samples
+    
+    # Confidence thresholds
+    MIN_SAMPLES_FOR_ETA: int = 2  # Minimum samples before providing ETA
+    STALE_THRESHOLD_SECONDS: float = 5.0  # Consider stale if no update in this time
 
     def __init__(self) -> None:
         self._start_time: float | None = None
         self._progress: float = 0.0
-        self._smoothed_rate: float | None = None  # Progress per second
+        self._smoothed_rate: float | None = None
         self._last_update_time: float = 0.0
         self._last_progress: float = 0.0
+        
+        # Enhanced tracking for accuracy
+        self._rate_history: list[tuple[float, float]] = []  # (timestamp, rate)
+        self._sample_count: int = 0
+        self._peak_rate: float = 0.0
+        self._min_rate: float = float('inf')
+        self._confidence: float = 0.0
+        self._stalled: bool = False
 
     def start(self) -> None:
         """Start ETA tracking."""
@@ -321,6 +394,12 @@ class ETACalculator:
         self._smoothed_rate = None
         self._last_update_time = self._start_time
         self._last_progress = 0.0
+        self._rate_history.clear()
+        self._sample_count = 0
+        self._peak_rate = 0.0
+        self._min_rate = float('inf')
+        self._confidence = 0.0
+        self._stalled = False
 
     def update(self, progress_fraction: float) -> None:
         """Update with current progress (0-1)."""
@@ -333,18 +412,73 @@ class ETACalculator:
 
         if time_delta > 0.01:  # Avoid division issues
             instant_rate = progress_delta / time_delta
+            
+            # Track rate history for trend analysis
+            self._rate_history.append((now, instant_rate))
+            if len(self._rate_history) > self.HISTORY_SIZE:
+                self._rate_history.pop(0)
+            
+            # Update rate statistics
+            if instant_rate > 0:
+                self._peak_rate = max(self._peak_rate, instant_rate)
+                self._min_rate = min(self._min_rate, instant_rate)
+            
+            self._sample_count += 1
+            
+            # Adaptive smoothing: more responsive at start, more stable later
+            smoothing = (
+                self.INITIAL_SMOOTHING_FACTOR 
+                if self._sample_count < self.WARMUP_SAMPLES 
+                else self.STABLE_SMOOTHING_FACTOR
+            )
 
             # Apply exponential smoothing
             if self._smoothed_rate is None:
                 self._smoothed_rate = instant_rate
             else:
+                # Detect burst/stall: sudden rate changes
+                if self._smoothed_rate > 0:
+                    rate_ratio = instant_rate / self._smoothed_rate
+                    # If rate changed dramatically, be more responsive
+                    if rate_ratio > 3.0 or rate_ratio < 0.3:
+                        smoothing = min(0.7, smoothing * 2)
+                
                 self._smoothed_rate = (
-                    self.SMOOTHING_FACTOR * instant_rate
-                    + (1 - self.SMOOTHING_FACTOR) * self._smoothed_rate
+                    smoothing * instant_rate
+                    + (1 - smoothing) * self._smoothed_rate
                 )
 
             self._last_update_time = now
             self._last_progress = self._progress
+            self._stalled = False
+            
+            # Update confidence based on sample count and rate stability
+            self._update_confidence()
+        else:
+            # Check for stall
+            if now - self._last_update_time > self.STALE_THRESHOLD_SECONDS:
+                self._stalled = True
+                self._confidence = max(0.0, self._confidence - 0.1)
+    
+    def _update_confidence(self) -> None:
+        """Update confidence score based on data quality."""
+        if self._sample_count < self.MIN_SAMPLES_FOR_ETA:
+            self._confidence = 0.0
+            return
+        
+        # Base confidence from sample count (max 0.5)
+        sample_confidence = min(0.5, self._sample_count / 20)
+        
+        # Rate stability confidence (max 0.3)
+        stability_confidence = 0.0
+        if self._peak_rate > 0 and self._min_rate < float('inf'):
+            rate_variance = (self._peak_rate - self._min_rate) / self._peak_rate
+            stability_confidence = 0.3 * max(0.0, 1.0 - rate_variance)
+        
+        # Progress confidence - more confident as we get further (max 0.2)
+        progress_confidence = 0.2 * self._progress
+        
+        self._confidence = min(1.0, sample_confidence + stability_confidence + progress_confidence)
 
     @property
     def elapsed_seconds(self) -> float:
@@ -355,7 +489,7 @@ class ETACalculator:
 
     @property
     def eta_seconds(self) -> float | None:
-        """Get estimated seconds remaining."""
+        """Get estimated seconds remaining using best available method."""
         if self._start_time is None or self._progress <= 0:
             return None
 
@@ -364,35 +498,119 @@ class ETACalculator:
 
         remaining_fraction = 1.0 - self._progress
 
-        # Use smoothed rate if available, otherwise simple calculation
+        # Method 1: Smoothed rate (primary)
+        eta_smoothed = None
         if self._smoothed_rate and self._smoothed_rate > 0:
-            return remaining_fraction / self._smoothed_rate
-        else:
-            # Fallback to simple elapsed-based calculation
-            elapsed = self.elapsed_seconds
-            if elapsed > 0 and self._progress > 0:
-                rate = self._progress / elapsed
-                return remaining_fraction / rate if rate > 0 else None
-
+            eta_smoothed = remaining_fraction / self._smoothed_rate
+        
+        # Method 2: Simple elapsed-based (fallback)
+        eta_simple = None
+        elapsed = self.elapsed_seconds
+        if elapsed > 0 and self._progress > 0:
+            rate = self._progress / elapsed
+            if rate > 0:
+                eta_simple = remaining_fraction / rate
+        
+        # Method 3: Recent trend-based (for accuracy)
+        eta_trend = self._calculate_trend_eta(remaining_fraction)
+        
+        # Weighted combination based on confidence and available data
+        if eta_smoothed is not None and eta_simple is not None:
+            if self._sample_count >= self.WARMUP_SAMPLES:
+                # Weight smoothed more heavily after warmup
+                weight = min(0.7, self._confidence)
+                eta = weight * eta_smoothed + (1 - weight) * eta_simple
+            else:
+                # Use simple average before warmup
+                eta = (eta_smoothed + eta_simple) / 2
+            
+            # Incorporate trend if available
+            if eta_trend is not None and self._sample_count >= 10:
+                eta = 0.7 * eta + 0.3 * eta_trend
+            
+            return max(0.0, eta)
+        
+        return eta_smoothed or eta_simple
+    
+    def _calculate_trend_eta(self, remaining_fraction: float) -> float | None:
+        """Calculate ETA based on recent rate trend."""
+        if len(self._rate_history) < 3:
+            return None
+        
+        # Use weighted average of recent rates (more weight to recent)
+        recent_rates = self._rate_history[-5:] if len(self._rate_history) >= 5 else self._rate_history
+        
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for i, (_, rate) in enumerate(recent_rates):
+            weight = i + 1  # More recent = higher weight
+            if rate > 0:
+                weighted_sum += weight * rate
+                weight_total += weight
+        
+        if weight_total > 0:
+            trend_rate = weighted_sum / weight_total
+            if trend_rate > 0:
+                return remaining_fraction / trend_rate
+        
         return None
 
+    @property
+    def confidence(self) -> float:
+        """Get confidence score for ETA (0.0 to 1.0)."""
+        return self._confidence
+
+    @property
+    def is_stalled(self) -> bool:
+        """Check if progress appears to be stalled."""
+        return self._stalled
+
     def eta_display(self) -> str:
-        """Get human-readable ETA string."""
+        """Get human-readable ETA string with confidence indicator."""
         eta = self.eta_seconds
+        
         if eta is None:
-            return "calculating..."
+            if self._sample_count < self.MIN_SAMPLES_FOR_ETA:
+                return "calculating..."
+            return "unknown"
+        
+        if self._stalled:
+            return "stalled..."
+        
         if eta < 0:
             return "any moment..."
+        
+        # Format the time
         if eta < 60:
-            return f"{eta:.0f}s remaining"
+            time_str = f"{eta:.0f}s"
         elif eta < 3600:
             minutes = int(eta // 60)
             seconds = int(eta % 60)
-            return f"{minutes}m {seconds}s remaining"
+            time_str = f"{minutes}m {seconds}s"
         else:
             hours = int(eta // 3600)
             minutes = int((eta % 3600) // 60)
-            return f"{hours}h {minutes}m remaining"
+            time_str = f"{hours}h {minutes}m"
+        
+        # Add confidence indicator for low confidence
+        if self._confidence < 0.3:
+            return f"~{time_str} remaining"
+        elif self._confidence < 0.6:
+            return f"{time_str} remaining"
+        else:
+            return f"{time_str} remaining"
+    
+    def get_rate_statistics(self) -> dict[str, float]:
+        """Get rate statistics for debugging/display."""
+        return {
+            "current_rate": self._smoothed_rate or 0.0,
+            "peak_rate": self._peak_rate,
+            "min_rate": self._min_rate if self._min_rate < float('inf') else 0.0,
+            "sample_count": float(self._sample_count),
+            "confidence": self._confidence,
+            "elapsed_seconds": self.elapsed_seconds,
+            "progress": self._progress,
+        }
 
     def reset(self) -> None:
         """Reset ETA calculator."""
@@ -401,6 +619,12 @@ class ETACalculator:
         self._smoothed_rate = None
         self._last_update_time = 0.0
         self._last_progress = 0.0
+        self._rate_history.clear()
+        self._sample_count = 0
+        self._peak_rate = 0.0
+        self._min_rate = float('inf')
+        self._confidence = 0.0
+        self._stalled = False
 
 
 # =============================================================================

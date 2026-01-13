@@ -199,22 +199,124 @@ class ConfigService:
             target.unlink()
 
     def _env_overrides(self) -> dict[str, Any]:
+        """Parse environment variables with PROXIMA_ prefix into config overrides.
+        
+        Supports multiple formats:
+        - PROXIMA_GENERAL__VERBOSITY=debug (double underscore for nesting)
+        - PROXIMA_BACKENDS__DEFAULT_BACKEND=cirq
+        - PROXIMA_LLM__PROVIDER=openai
+        
+        Edge cases handled:
+        - Empty values are treated as empty strings (not None)
+        - Numeric strings are parsed to int/float
+        - Boolean strings (true/false/yes/no/1/0) are parsed
+        - JSON arrays and objects are parsed
+        - Whitespace is trimmed
+        - Case-insensitive boolean parsing
+        """
         overrides: dict[str, Any] = {}
         prefix = f"{self.env_prefix}_"
         for key, raw_value in os.environ.items():
             if not key.startswith(prefix):
                 continue
             path_part = key[len(prefix) :]
-            path_segments = self._normalize_env_key(path_part)
-            _set_nested(overrides, path_segments, _parse_scalar(raw_value))
+            # Skip empty path parts
+            if not path_part.strip():
+                continue
+            try:
+                path_segments = self._normalize_env_key(path_part)
+                if not path_segments:
+                    continue
+                parsed_value = self._parse_env_value(raw_value)
+                _set_nested(overrides, path_segments, parsed_value)
+            except (ValueError, KeyError) as exc:
+                # Log warning but don't fail on invalid env vars
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Failed to parse env var {key}: {exc}"
+                )
         return overrides
 
+    def _parse_env_value(self, value: str) -> Any:
+        """Parse environment variable value with comprehensive type coercion.
+        
+        Handles edge cases:
+        - Empty string -> ""
+        - Whitespace-only -> ""
+        - "null", "none", "nil" -> None
+        - "true", "yes", "1", "on" -> True
+        - "false", "no", "0", "off" -> False
+        - Integer strings -> int
+        - Float strings -> float
+        - JSON arrays/objects -> parsed structure
+        - Everything else -> string
+        """
+        if value is None:
+            return None
+            
+        trimmed = value.strip()
+        
+        # Empty or whitespace-only
+        if not trimmed:
+            return ""
+            
+        lowered = trimmed.lower()
+        
+        # Null values
+        if lowered in {"null", "none", "nil"}:
+            return None
+            
+        # Boolean values (expanded set)
+        if lowered in {"true", "yes", "1", "on", "enabled"}:
+            return True
+        if lowered in {"false", "no", "0", "off", "disabled"}:
+            return False
+            
+        # Try JSON parsing for complex values (arrays, objects, quoted strings)
+        if trimmed.startswith(("{", "[", '"')):
+            try:
+                return json.loads(trimmed)
+            except json.JSONDecodeError:
+                pass
+                
+        # Try numeric parsing
+        try:
+            if "." in trimmed or "e" in trimmed.lower():
+                return float(trimmed)
+            return int(trimmed)
+        except ValueError:
+            pass
+            
+        # Return as string
+        return trimmed
+
     def _normalize_env_key(self, key: str) -> list[str]:
+        """Normalize environment variable key to config path segments.
+        
+        Supports:
+        - Double underscore (__) as explicit separator: GENERAL__VERBOSITY
+        - Single underscore (_) as fallback separator: GENERAL_VERBOSITY
+        - Mixed case handling: converts to lowercase
+        
+        Edge cases:
+        - Leading/trailing underscores are stripped
+        - Multiple consecutive underscores are handled
+        - Empty segments are filtered out
+        """
+        # Prefer double underscore as explicit nesting separator
         if "__" in key:
             segments = key.split("__")
         else:
+            # Fallback to single underscore for simple keys
             segments = key.split("_")
-        return [segment.lower() for segment in segments if segment]
+        
+        # Clean and filter segments
+        result = []
+        for segment in segments:
+            cleaned = segment.strip().lower()
+            if cleaned:  # Skip empty segments
+                result.append(cleaned)
+        return result
 
     def _normalize_key_path(self, key_path: str) -> list[str]:
         if not key_path:

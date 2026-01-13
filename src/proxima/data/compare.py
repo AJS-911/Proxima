@@ -585,31 +585,207 @@ class MultiBackendComparator:
                 error=str(e),
             )
 
+    async def _execute_with_semaphore(
+        self,
+        semaphore: asyncio.Semaphore,
+        adapter: BaseBackendAdapter,
+        circuit: Any,
+        options: dict[str, Any] | None,
+        timeout: float | None = None,
+    ) -> BackendResult:
+        """Execute a backend with semaphore control and optional timeout.
+        
+        Args:
+            semaphore: Semaphore for concurrency control
+            adapter: Backend adapter to execute
+            circuit: Quantum circuit
+            options: Execution options
+            timeout: Optional timeout in seconds
+            
+        Returns:
+            BackendResult with execution outcome
+        """
+        async with semaphore:
+            if timeout is not None:
+                try:
+                    return await asyncio.wait_for(
+                        self._execute_backend(adapter, circuit, options),
+                        timeout=timeout,
+                    )
+                except asyncio.TimeoutError:
+                    return BackendResult(
+                        backend_name=adapter.get_name(),
+                        success=False,
+                        execution_time_ms=timeout * 1000,
+                        memory_peak_mb=0.0,
+                        error=f"Execution timed out after {timeout}s",
+                    )
+            else:
+                return await self._execute_backend(adapter, circuit, options)
+
     async def _execute_batch_parallel(
         self,
         adapters: list[BaseBackendAdapter],
         circuit: Any,
         options: dict[str, Any] | None,
+        max_concurrent: int | None = None,
+        timeout_per_backend: float | None = None,
+        cancellation_event: asyncio.Event | None = None,
     ) -> list[BackendResult]:
-        """Execute circuit on multiple backends in parallel."""
-        tasks = [
-            self._execute_backend(adapter, circuit, options) for adapter in adapters
-        ]
-        return await asyncio.gather(*tasks)
+        """Execute circuit on multiple backends in parallel with resource management.
+        
+        Enhanced parallel execution with:
+        - Configurable concurrency limits via semaphore
+        - Per-backend timeout handling
+        - Cancellation support for graceful shutdown
+        - Ordered result preservation
+        - Automatic resource throttling based on system memory
+        
+        Args:
+            adapters: List of backend adapters to execute
+            circuit: Quantum circuit to run
+            options: Execution options
+            max_concurrent: Maximum concurrent executions (default: auto-detect)
+            timeout_per_backend: Timeout per backend in seconds (default: None)
+            cancellation_event: Event to signal cancellation (default: None)
+            
+        Returns:
+            List of BackendResult in same order as adapters
+        """
+        if not adapters:
+            return []
+            
+        # Auto-detect concurrency limit based on available memory
+        if max_concurrent is None:
+            try:
+                import psutil
+                available_memory_gb = psutil.virtual_memory().available / (1024**3)
+                # Estimate ~2GB per backend execution, cap at number of adapters
+                max_concurrent = max(1, min(len(adapters), int(available_memory_gb / 2)))
+            except ImportError:
+                # Default to min of 4 or number of adapters
+                max_concurrent = min(4, len(adapters))
+        
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        # Create tasks with semaphore control
+        async def execute_with_check(
+            adapter: BaseBackendAdapter,
+        ) -> BackendResult:
+            # Check for cancellation before starting
+            if cancellation_event and cancellation_event.is_set():
+                return BackendResult(
+                    backend_name=adapter.get_name(),
+                    success=False,
+                    execution_time_ms=0.0,
+                    memory_peak_mb=0.0,
+                    error="Execution cancelled",
+                )
+            return await self._execute_with_semaphore(
+                semaphore, adapter, circuit, options, timeout_per_backend
+            )
+        
+        tasks = [execute_with_check(adapter) for adapter in adapters]
+        
+        # Use gather with return_exceptions to handle individual failures
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Convert exceptions to BackendResult
+        processed_results: list[BackendResult] = []
+        for idx, result in enumerate(results):
+            if isinstance(result, Exception):
+                processed_results.append(
+                    BackendResult(
+                        backend_name=adapters[idx].get_name(),
+                        success=False,
+                        execution_time_ms=0.0,
+                        memory_peak_mb=0.0,
+                        error=f"Unexpected error: {result}",
+                    )
+                )
+            else:
+                processed_results.append(result)
+        
+        return processed_results
 
     async def _execute_batch_sequential(
         self,
         adapters: list[BaseBackendAdapter],
         circuit: Any,
         options: dict[str, Any] | None,
+        timeout_per_backend: float | None = None,
+        cancellation_event: asyncio.Event | None = None,
+        cleanup_between: bool = True,
     ) -> list[BackendResult]:
-        """Execute circuit on backends sequentially with cleanup between."""
-        results = []
+        """Execute circuit on backends sequentially with cleanup between.
+        
+        Enhanced sequential execution with:
+        - Per-backend timeout handling
+        - Cancellation support for graceful shutdown
+        - Configurable cleanup between executions
+        - Memory pressure monitoring
+        
+        Args:
+            adapters: List of backend adapters to execute
+            circuit: Quantum circuit to run
+            options: Execution options
+            timeout_per_backend: Timeout per backend in seconds (default: None)
+            cancellation_event: Event to signal cancellation (default: None)
+            cleanup_between: Whether to run gc.collect() between executions
+            
+        Returns:
+            List of BackendResult in same order as adapters
+        """
+        results: list[BackendResult] = []
+        
         for adapter in adapters:
-            result = await self._execute_backend(adapter, circuit, options)
+            # Check for cancellation
+            if cancellation_event and cancellation_event.is_set():
+                results.append(
+                    BackendResult(
+                        backend_name=adapter.get_name(),
+                        success=False,
+                        execution_time_ms=0.0,
+                        memory_peak_mb=0.0,
+                        error="Execution cancelled",
+                    )
+                )
+                continue
+            
+            # Execute with optional timeout
+            if timeout_per_backend is not None:
+                try:
+                    result = await asyncio.wait_for(
+                        self._execute_backend(adapter, circuit, options),
+                        timeout=timeout_per_backend,
+                    )
+                except asyncio.TimeoutError:
+                    result = BackendResult(
+                        backend_name=adapter.get_name(),
+                        success=False,
+                        execution_time_ms=timeout_per_backend * 1000,
+                        memory_peak_mb=0.0,
+                        error=f"Execution timed out after {timeout_per_backend}s",
+                    )
+            else:
+                result = await self._execute_backend(adapter, circuit, options)
+            
             results.append(result)
-            # Cleanup between executions
-            gc.collect()
+            
+            # Cleanup between executions to manage memory
+            if cleanup_between:
+                gc.collect()
+                # Check memory pressure and wait if needed
+                try:
+                    import psutil
+                    memory_percent = psutil.virtual_memory().percent
+                    if memory_percent > 90:
+                        # High memory pressure - force aggressive cleanup
+                        gc.collect()
+                        await asyncio.sleep(0.1)  # Brief pause for memory reclaim
+                except ImportError:
+                    pass
+        
         return results
 
     def validate_backends(
@@ -662,13 +838,16 @@ class MultiBackendComparator:
         circuit: Any,
         options: dict[str, Any] | None = None,
         strategy: ExecutionStrategy = ExecutionStrategy.ADAPTIVE,
+        max_concurrent: int | None = None,
+        timeout_per_backend: float | None = None,
+        cancellation_event: asyncio.Event | None = None,
     ) -> ComparisonReport:
         """Compare circuit execution across multiple backends.
 
         This implements the full Step 5.1 workflow:
         1. Validate circuit on all backends
         2. Plan execution strategy
-        3. Execute on each backend
+        3. Execute on each backend with resource management
         4. Analyze and compare results
         5. Generate report
 
@@ -677,6 +856,9 @@ class MultiBackendComparator:
             circuit: Quantum circuit to execute
             options: Execution options (shots, etc.)
             strategy: Execution strategy (PARALLEL, SEQUENTIAL, or ADAPTIVE)
+            max_concurrent: Maximum concurrent backend executions (default: auto-detect)
+            timeout_per_backend: Timeout per backend in seconds (default: None - no timeout)
+            cancellation_event: Event to signal cancellation for graceful shutdown
 
         Returns:
             ComparisonReport with full comparison results
@@ -684,6 +866,19 @@ class MultiBackendComparator:
         start_time = time.perf_counter()
         errors: list[str] = []
         warnings: list[str] = []
+
+        # Check for early cancellation
+        if cancellation_event and cancellation_event.is_set():
+            return ComparisonReport(
+                circuit_info={"type": type(circuit).__name__},
+                backends_compared=[a.get_name() for a in adapters],
+                execution_strategy=strategy,
+                total_time_ms=0.0,
+                status=ComparisonStatus.FAILED,
+                backend_results={},
+                metrics=ComparisonMetrics(),
+                errors=["Comparison cancelled before execution"],
+            )
 
         # Extract circuit info
         circuit_info = {
@@ -730,21 +925,35 @@ class MultiBackendComparator:
 
         self._report_progress("executing", 0.3)
 
-        # Step 4: Execute on each backend
+        # Step 4: Execute on each backend with enhanced resource management
         all_results: list[BackendResult] = []
 
         for batch_idx, batch in enumerate(batches):
+            # Check for cancellation between batches
+            if cancellation_event and cancellation_event.is_set():
+                warnings.append(f"Cancelled after {batch_idx} of {len(batches)} batches")
+                break
+                
             batch_adapters = [
                 adapter_map[name] for name in batch if name in adapter_map
             ]
 
             if actual_strategy == ExecutionStrategy.PARALLEL:
                 batch_results = await self._execute_batch_parallel(
-                    batch_adapters, circuit, options
+                    batch_adapters,
+                    circuit,
+                    options,
+                    max_concurrent=max_concurrent,
+                    timeout_per_backend=timeout_per_backend,
+                    cancellation_event=cancellation_event,
                 )
             else:
                 batch_results = await self._execute_batch_sequential(
-                    batch_adapters, circuit, options
+                    batch_adapters,
+                    circuit,
+                    options,
+                    timeout_per_backend=timeout_per_backend,
+                    cancellation_event=cancellation_event,
                 )
 
             all_results.extend(batch_results)

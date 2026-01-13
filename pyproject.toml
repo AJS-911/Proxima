@@ -118,8 +118,13 @@ docs = [
     "pygments>=2.17.0",
 ]
 
+packaging = [
+    # Binary builds
+    "pyinstaller>=6.0.0",
+]
+
 all = [
-    "proxima[dev,llm,ui,docs]",
+    "proxima[dev,llm,ui,docs,packaging]",
 ]
 
 [project.scripts]

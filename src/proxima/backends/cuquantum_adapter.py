@@ -962,3 +962,211 @@ class CuQuantumAdapter(BaseBackendAdapter):
         cuQuantum only supports state vector simulation.
         """
         return sim_type == SimulatorType.STATE_VECTOR
+        
+    # =========================================================================
+    # Step 2.4: Multi-GPU Support
+    # =========================================================================
+    
+    def select_best_gpu(self, num_qubits: int) -> int:
+        """Select the best GPU for a given circuit size.
+        
+        Step 2.4: Multi-GPU device selection based on:
+        - Available memory (must fit state vector)
+        - Compute capability (higher is better)
+        - Current utilization (prefer less loaded)
+        
+        Args:
+            num_qubits: Number of qubits in the circuit
+            
+        Returns:
+            Device ID of best GPU, or -1 if no suitable GPU found
+        """
+        if not self._gpu_devices:
+            return -1
+            
+        required_memory = self._estimate_memory_mb(num_qubits)
+        
+        candidates = []
+        for device in self._gpu_devices:
+            if not device.is_cuquantum_compatible:
+                continue
+            if device.free_memory_mb < required_memory:
+                continue
+                
+            # Score: higher is better
+            # Weight available memory and compute capability
+            memory_headroom = device.free_memory_mb - required_memory
+            cc_major = int(device.compute_capability.split('.')[0])
+            score = memory_headroom * 0.001 + cc_major * 10
+            
+            candidates.append((device.device_id, score))
+            
+        if not candidates:
+            return -1
+            
+        # Return device with highest score
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0]
+        
+    def get_multi_gpu_config(self) -> dict[str, Any]:
+        """Get configuration for multi-GPU execution.
+        
+        Step 2.4: Multi-GPU configuration for distributed simulation.
+        
+        Returns:
+            Dict with multi-GPU settings and device mapping
+        """
+        compatible_devices = [
+            d for d in self._gpu_devices
+            if d.is_cuquantum_compatible
+        ]
+        
+        total_memory_mb = sum(d.free_memory_mb for d in compatible_devices)
+        
+        return {
+            "num_gpus": len(compatible_devices),
+            "device_ids": [d.device_id for d in compatible_devices],
+            "total_memory_mb": total_memory_mb,
+            "max_qubits_distributed": self._calculate_distributed_max_qubits(compatible_devices),
+            "devices": [
+                {
+                    "id": d.device_id,
+                    "name": d.name,
+                    "memory_mb": d.free_memory_mb,
+                    "compute_capability": d.compute_capability,
+                }
+                for d in compatible_devices
+            ],
+        }
+        
+    def _calculate_distributed_max_qubits(self, devices: list[GPUDeviceInfo]) -> int:
+        """Calculate maximum qubits for distributed multi-GPU simulation."""
+        if not devices:
+            return 0
+            
+        # Total memory across all GPUs
+        total_memory_bytes = sum(d.free_memory_mb for d in devices) * 1024 * 1024 * 0.8
+        
+        bytes_per_amplitude = (
+            16 if self._config.precision == CuQuantumPrecision.DOUBLE else 8
+        )
+        
+        import math
+        return int(math.log2(total_memory_bytes / bytes_per_amplitude))
+        
+    # =========================================================================
+    # Step 2.5: Memory Pooling
+    # =========================================================================
+    
+    def create_memory_pool(self, size_mb: int = 1024) -> bool:
+        """Create a GPU memory pool for faster allocations.
+        
+        Step 2.5: Memory pooling reduces allocation overhead for
+        repeated simulations.
+        
+        Args:
+            size_mb: Pool size in megabytes
+            
+        Returns:
+            True if pool was created successfully
+        """
+        if not self._cuda_available:
+            return False
+            
+        try:
+            import cupy as cp
+            
+            # Create memory pool
+            pool_size_bytes = size_mb * 1024 * 1024
+            mempool = cp.cuda.MemoryPool(cp.cuda.malloc_managed)
+            cp.cuda.set_allocator(mempool.malloc)
+            
+            # Pre-allocate
+            mempool.set_limit(size=pool_size_bytes)
+            
+            self._logger.info(f"Created GPU memory pool of {size_mb} MB")
+            return True
+            
+        except ImportError:
+            self._logger.debug("CuPy not available for memory pooling")
+        except Exception as e:
+            self._logger.warning(f"Failed to create memory pool: {e}")
+            
+        return False
+        
+    def get_memory_pool_stats(self) -> dict[str, Any] | None:
+        """Get statistics about the GPU memory pool.
+        
+        Returns:
+            Dict with pool statistics, or None if pooling not available
+        """
+        try:
+            import cupy as cp
+            
+            mempool = cp.get_default_memory_pool()
+            pinned_mempool = cp.get_default_pinned_memory_pool()
+            
+            return {
+                "used_bytes": mempool.used_bytes(),
+                "total_bytes": mempool.total_bytes(),
+                "n_free_blocks": mempool.n_free_blocks(),
+                "pinned_used_bytes": pinned_mempool.n_free_blocks(),
+            }
+            
+        except Exception:
+            return None
+            
+    def clear_memory_pool(self) -> None:
+        """Clear the GPU memory pool to free unused memory."""
+        try:
+            import cupy as cp
+            
+            mempool = cp.get_default_memory_pool()
+            pinned_mempool = cp.get_default_pinned_memory_pool()
+            
+            mempool.free_all_blocks()
+            pinned_mempool.free_all_blocks()
+            
+            self._logger.debug("Cleared GPU memory pool")
+            
+        except Exception as e:
+            self._logger.debug(f"Failed to clear memory pool: {e}")
+            
+    def warm_up_gpu(self, num_qubits: int = 10) -> float:
+        """Warm up GPU by running a small test circuit.
+        
+        This reduces latency for subsequent executions by:
+        - Loading CUDA kernels
+        - Allocating initial memory pools
+        - Establishing GPU context
+        
+        Args:
+            num_qubits: Size of warm-up circuit
+            
+        Returns:
+            Warm-up time in milliseconds
+        """
+        if not self.is_available():
+            return 0.0
+            
+        try:
+            from qiskit import QuantumCircuit
+            
+            # Create simple warm-up circuit
+            qc = QuantumCircuit(num_qubits)
+            for i in range(num_qubits):
+                qc.h(i)
+            for i in range(num_qubits - 1):
+                qc.cx(i, i + 1)
+            qc.measure_all()
+            
+            start = time.perf_counter()
+            self.execute(qc, {"shots": 100})
+            warmup_time = (time.perf_counter() - start) * 1000
+            
+            self._logger.debug(f"GPU warm-up completed in {warmup_time:.2f} ms")
+            return warmup_time
+            
+        except Exception as e:
+            self._logger.warning(f"GPU warm-up failed: {e}")
+            return 0.0

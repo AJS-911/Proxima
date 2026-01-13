@@ -1344,7 +1344,15 @@ class QuestBackendAdapter(BaseBackendAdapter):
         return None
 
     def _apply_gates(self, register: Any, gates: list[dict], unitaries: Any) -> None:
-        """Apply a list of gate dictionaries to a pyQuEST register."""
+        """Apply a list of gate dictionaries to a pyQuEST register.
+        
+        Comprehensive gate mapping supporting:
+        - Standard single-qubit gates: H, X, Y, Z, S, T, Sdg, Tdg
+        - Rotation gates: Rx, Ry, Rz, U, U1, U2, U3
+        - Two-qubit gates: CNOT/CX, CY, CZ, SWAP, iSWAP
+        - Three-qubit gates: CCX (Toffoli), CSWAP (Fredkin)
+        - Controlled variants with arbitrary control qubits
+        """
         for gate in gates:
             gate_name = gate.get("gate", "").lower()
             qubits = gate.get("qubits", [])
@@ -1357,6 +1365,7 @@ class QuestBackendAdapter(BaseBackendAdapter):
             op = None
             target = qubits[0]
 
+            # Single-qubit gates
             if gate_name in ("h", "hadamard"):
                 op = (
                     unitaries.H(target, controls=controls)
@@ -1383,8 +1392,21 @@ class QuestBackendAdapter(BaseBackendAdapter):
                 )
             elif gate_name == "s" and hasattr(unitaries, "S"):
                 op = unitaries.S(target)
+            elif gate_name == "sdg" and hasattr(unitaries, "Sdg"):
+                op = unitaries.Sdg(target)
             elif gate_name == "t" and hasattr(unitaries, "T"):
                 op = unitaries.T(target)
+            elif gate_name == "tdg" and hasattr(unitaries, "Tdg"):
+                op = unitaries.Tdg(target)
+            elif gate_name == "sx" and hasattr(unitaries, "Sx"):
+                op = unitaries.Sx(target)
+            elif gate_name == "sxdg" and hasattr(unitaries, "Sxdg"):
+                op = unitaries.Sxdg(target)
+            elif gate_name in ("id", "i", "identity"):
+                # Identity gate - no operation needed
+                continue
+                
+            # Rotation gates
             elif gate_name == "rx" and params:
                 angle = float(params[0])
                 op = (
@@ -1406,19 +1428,143 @@ class QuestBackendAdapter(BaseBackendAdapter):
                     if controls
                     else unitaries.Rz(target, angle)
                 )
+            elif gate_name in ("p", "phase", "u1") and params:
+                # Phase gate (same as Rz up to global phase)
+                angle = float(params[0])
+                if hasattr(unitaries, "Phase"):
+                    op = unitaries.Phase(target, angle)
+                else:
+                    op = unitaries.Rz(target, angle)
+            elif gate_name == "u2" and len(params) >= 2:
+                # U2(phi, lambda) = 1/sqrt(2) * [[1, -exp(i*lambda)], [exp(i*phi), exp(i*(phi+lambda))]]
+                phi, lam = float(params[0]), float(params[1])
+                if hasattr(unitaries, "U2"):
+                    op = unitaries.U2(target, phi, lam)
+                else:
+                    # Decompose: U2 = Rz(phi+pi/2) * Ry(pi/2) * Rz(lam-pi/2)
+                    register.apply_operator(unitaries.Rz(target, lam - np.pi/2))
+                    register.apply_operator(unitaries.Ry(target, np.pi/2))
+                    op = unitaries.Rz(target, phi + np.pi/2)
+            elif gate_name == "u3" and len(params) >= 3:
+                # U3(theta, phi, lambda) = general single-qubit rotation
+                theta, phi, lam = float(params[0]), float(params[1]), float(params[2])
+                if hasattr(unitaries, "U3"):
+                    op = unitaries.U3(target, theta, phi, lam)
+                elif hasattr(unitaries, "U"):
+                    op = unitaries.U(target, theta, phi, lam)
+                else:
+                    # Decompose: U3 = Rz(phi) * Ry(theta) * Rz(lambda)
+                    register.apply_operator(unitaries.Rz(target, lam))
+                    register.apply_operator(unitaries.Ry(target, theta))
+                    op = unitaries.Rz(target, phi)
+            elif gate_name == "u" and len(params) >= 3:
+                theta, phi, lam = float(params[0]), float(params[1]), float(params[2])
+                if hasattr(unitaries, "U"):
+                    op = unitaries.U(target, theta, phi, lam)
+                elif hasattr(unitaries, "U3"):
+                    op = unitaries.U3(target, theta, phi, lam)
+                    
+            # Two-qubit gates
             elif gate_name in ("cx", "cnot") and len(qubits) >= 2:
                 op = unitaries.X(qubits[1], controls=[qubits[0]])
             elif gate_name == "cy" and len(qubits) >= 2:
                 op = unitaries.Y(qubits[1], controls=[qubits[0]])
             elif gate_name == "cz" and len(qubits) >= 2:
                 op = unitaries.Z(qubits[1], controls=[qubits[0]])
-            elif (
-                gate_name == "swap" and len(qubits) >= 2 and hasattr(unitaries, "SWAP")
-            ):
-                op = unitaries.SWAP(qubits[0], qubits[1])
+            elif gate_name == "ch" and len(qubits) >= 2:
+                op = unitaries.H(qubits[1], controls=[qubits[0]])
+            elif gate_name == "crx" and len(qubits) >= 2 and params:
+                angle = float(params[0])
+                op = unitaries.Rx(qubits[1], angle, controls=[qubits[0]])
+            elif gate_name == "cry" and len(qubits) >= 2 and params:
+                angle = float(params[0])
+                op = unitaries.Ry(qubits[1], angle, controls=[qubits[0]])
+            elif gate_name == "crz" and len(qubits) >= 2 and params:
+                angle = float(params[0])
+                op = unitaries.Rz(qubits[1], angle, controls=[qubits[0]])
+            elif gate_name == "swap" and len(qubits) >= 2:
+                if hasattr(unitaries, "SWAP"):
+                    op = unitaries.SWAP(qubits[0], qubits[1])
+                else:
+                    # Decompose SWAP into 3 CNOTs
+                    register.apply_operator(unitaries.X(qubits[1], controls=[qubits[0]]))
+                    register.apply_operator(unitaries.X(qubits[0], controls=[qubits[1]]))
+                    op = unitaries.X(qubits[1], controls=[qubits[0]])
+            elif gate_name == "iswap" and len(qubits) >= 2:
+                if hasattr(unitaries, "iSWAP"):
+                    op = unitaries.iSWAP(qubits[0], qubits[1])
+                    
+            # Three-qubit gates
+            elif gate_name in ("ccx", "toffoli", "ccnot") and len(qubits) >= 3:
+                op = unitaries.X(qubits[2], controls=[qubits[0], qubits[1]])
+            elif gate_name in ("cswap", "fredkin") and len(qubits) >= 3:
+                if hasattr(unitaries, "CSWAP"):
+                    op = unitaries.CSWAP(qubits[0], qubits[1], qubits[2])
+                elif hasattr(unitaries, "SWAP"):
+                    # Controlled-SWAP decomposition
+                    register.apply_operator(unitaries.X(qubits[2], controls=[qubits[0], qubits[1]]))
+                    register.apply_operator(unitaries.X(qubits[1], controls=[qubits[0], qubits[2]]))
+                    op = unitaries.X(qubits[2], controls=[qubits[0], qubits[1]])
+            elif gate_name == "ccz" and len(qubits) >= 3:
+                op = unitaries.Z(qubits[2], controls=[qubits[0], qubits[1]])
+                
+            # Skip measurement and barrier gates
+            elif gate_name in ("measure", "barrier", "reset"):
+                continue
 
             if op is not None:
                 register.apply_operator(op)
+                
+    def tune_threads(
+        self,
+        num_qubits: int,
+        sim_type: SimulatorType = SimulatorType.STATE_VECTOR,
+    ) -> int:
+        """Automatically tune OpenMP thread count for optimal performance.
+        
+        Step 1.4d: Thread Tuning for different workload sizes.
+        
+        Args:
+            num_qubits: Number of qubits in the circuit
+            sim_type: Type of simulation
+            
+        Returns:
+            Recommended thread count
+        """
+        try:
+            import psutil
+            physical_cores = psutil.cpu_count(logical=False) or 4
+            logical_cores = psutil.cpu_count(logical=True) or 8
+        except ImportError:
+            physical_cores = os.cpu_count() or 4
+            logical_cores = physical_cores
+            
+        # Heuristics for thread tuning:
+        # - Small circuits (<10 qubits): Use fewer threads (overhead dominates)
+        # - Medium circuits (10-20 qubits): Scale with cores
+        # - Large circuits (>20 qubits): Use all available cores
+        
+        if num_qubits < 10:
+            # Small workload: threading overhead may hurt performance
+            recommended = min(4, physical_cores)
+        elif num_qubits < 15:
+            # Medium workload: use physical cores
+            recommended = physical_cores
+        elif num_qubits < 20:
+            # Larger workload: use all logical cores
+            recommended = logical_cores
+        else:
+            # Very large: maximize parallelism
+            recommended = logical_cores
+            
+        # Density matrix simulations benefit from more threads
+        if sim_type == SimulatorType.DENSITY_MATRIX:
+            recommended = min(recommended * 2, logical_cores)
+            
+        self._configure_openmp(recommended)
+        self._logger.debug(f"Thread tuning: {recommended} threads for {num_qubits} qubits")
+        
+        return recommended
 
     def _sample_measurements(
         self, register: Any, num_qubits: int, shots: int, pyQuEST: Any, unitaries: Any

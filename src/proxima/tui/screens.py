@@ -372,9 +372,11 @@ class ExecutionScreen(BaseScreen):
 
     Features:
     - Task configuration
-    - Real-time progress bar
-    - Live log output
+    - Real-time progress bar with auto-refresh
+    - Live log output with streaming
     - Stop/Cancel controls
+    - Backend selection
+    - Real execution with pipeline integration
     """
 
     CSS = """
@@ -393,6 +395,15 @@ class ExecutionScreen(BaseScreen):
 
     #exec-header Label {
         margin-right: 2;
+    }
+    
+    #exec-config {
+        height: auto;
+        padding: 0 1;
+    }
+    
+    #exec-config Input {
+        width: 40;
     }
 
     #log-section {
@@ -414,22 +425,35 @@ class ExecutionScreen(BaseScreen):
         *BaseScreen.BINDINGS,
         Binding("s", "stop_execution", "Stop", show=True),
         Binding("c", "clear_logs", "Clear Logs", show=True),
+        Binding("enter", "start_execution", "Start", show=False),
     ]
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._is_running = False
+        self._cancellation_requested = False
+        self._execution_start_time: float = 0
+        self._update_timer = None
+        self._current_backend = "auto"
+        self._shots = 1024
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
 
         with Vertical(id="exec-header"):
             yield Label("🚀 Execution Console", classes="section-title")
+            with Horizontal(id="exec-config"):
+                yield Label("Backend:")
+                from textual.widgets import Input, Select
+                yield Input(value="auto", id="backend-input", placeholder="cirq, qiskit, lret...")
+                yield Label("Shots:")
+                yield Input(value="1024", id="shots-input", placeholder="1024")
             yield ProgressBar(total=100, label="Task Progress", id="exec-progress")
             with Horizontal():
                 yield Label("Status: Idle", id="exec-status")
                 yield Label("Backend: -", id="exec-backend")
                 yield Label("Duration: -", id="exec-duration")
+                yield Label("ETA: -", id="exec-eta")
 
         with Container(id="log-section"):
             yield LogViewer(id="exec-logs")
@@ -446,15 +470,41 @@ class ExecutionScreen(BaseScreen):
         """Initialize execution screen."""
         log_viewer = self.query_one("#exec-logs", LogViewer)
         log_viewer.log_info("Execution console ready")
-        log_viewer.log_info("Press 'Start' to begin a new execution")
+        log_viewer.log_info("Configure backend and shots, then press 'Start'")
+        log_viewer.log_info("Available backends: cirq, qiskit, lret, or 'auto' for default")
+
+    def _start_timer(self) -> None:
+        """Start the duration update timer."""
+        self._execution_start_time = time.time()
+        self._update_timer = self.set_interval(0.5, self._update_duration)
+
+    def _stop_timer(self) -> None:
+        """Stop the duration update timer."""
+        if self._update_timer:
+            self._update_timer.stop()
+            self._update_timer = None
+
+    def _update_duration(self) -> None:
+        """Update the duration label in real-time."""
+        if self._is_running and self._execution_start_time:
+            elapsed = time.time() - self._execution_start_time
+            duration_label = self.query_one("#exec-duration", Label)
+            duration_label.update(f"Duration: {elapsed:.1f}s")
+
+    def action_start_execution(self) -> None:
+        """Start execution from keyboard."""
+        if not self._is_running:
+            self._start_execution_task()
 
     def action_stop_execution(self) -> None:
         """Stop current execution."""
         if self._is_running:
+            self._cancellation_requested = True
             self._is_running = False
+            self._stop_timer()
             self._update_controls()
             log_viewer = self.query_one("#exec-logs", LogViewer)
-            log_viewer.log_warning("Execution stopped by user")
+            log_viewer.log_warning("Execution stop requested by user")
 
     def action_clear_logs(self) -> None:
         """Clear the log viewer."""
@@ -472,34 +522,63 @@ class ExecutionScreen(BaseScreen):
 
         status_label = self.query_one("#exec-status", Label)
         status_label.update(f"Status: {'Running' if self._is_running else 'Idle'}")
+        
+        # Update backend display
+        backend_label = self.query_one("#exec-backend", Label)
+        backend_label.update(f"Backend: {self._current_backend}")
+
+    def _start_execution_task(self) -> None:
+        """Initiate execution with current config."""
+        # Read config from inputs
+        try:
+            from textual.widgets import Input
+            backend_input = self.query_one("#backend-input", Input)
+            shots_input = self.query_one("#shots-input", Input)
+            self._current_backend = backend_input.value or "auto"
+            self._shots = int(shots_input.value) if shots_input.value else 1024
+        except Exception:
+            self._current_backend = "auto"
+            self._shots = 1024
+        
+        self._is_running = True
+        self._cancellation_requested = False
+        self._update_controls()
+        self._start_timer()
+        # Try real execution first, fall back to demo
+        self.run_worker(self._run_real_execution(self._current_backend))
 
     async def _run_demo_execution(self) -> None:
         """Run a demo execution for testing."""
         log_viewer = self.query_one("#exec-logs", LogViewer)
         progress_bar = self.query_one("#exec-progress", ProgressBar)
+        eta_label = self.query_one("#exec-eta", Label)
 
-        log_viewer.log_info("Starting execution...")
+        log_viewer.log_info("Starting demo execution...")
 
         steps = [
-            (10, "Initializing backend"),
-            (30, "Compiling circuit"),
-            (50, "Executing task"),
-            (70, "Processing results"),
-            (90, "Generating report"),
-            (100, "Complete"),
+            (10, "Initializing backend", 4.5),
+            (30, "Compiling circuit", 3.5),
+            (50, "Executing task", 2.5),
+            (70, "Processing results", 1.5),
+            (90, "Generating report", 0.5),
+            (100, "Complete", 0.0),
         ]
 
-        for progress, status in steps:
-            if not self._is_running:
+        for progress, status, eta_seconds in steps:
+            if not self._is_running or self._cancellation_requested:
                 break
             progress_bar.update_progress(progress, status)
+            eta_label.update(f"ETA: {eta_seconds:.1f}s" if eta_seconds > 0 else "ETA: -")
             log_viewer.log_info(status)
             await self.app.call_later(0.5)
 
-        if self._is_running:
+        if self._is_running and not self._cancellation_requested:
             log_viewer.log_success("Execution completed successfully")
-            self._is_running = False
-            self._update_controls()
+            log_viewer.log_info(f"Simulated {self._shots} shots completed")
+        
+        self._stop_timer()
+        self._is_running = False
+        self._update_controls()
 
     async def _export_logs(self, log_viewer) -> None:
         """Export logs to a file."""
@@ -539,82 +618,112 @@ class ExecutionScreen(BaseScreen):
         """Run a real execution using the Proxima pipeline."""
         log_viewer = self.query_one("#exec-logs", LogViewer)
         progress_bar = self.query_one("#exec-progress", ProgressBar)
+        eta_label = self.query_one("#exec-eta", Label)
 
         try:
             # Try to import real execution components
-            from proxima.core.pipeline import DataFlowPipeline, PipelineContext
+            from proxima.core.pipeline import DataFlowPipeline, PipelineStage
 
             log_viewer.log_info("Initializing execution pipeline...")
-            progress_bar.update_progress(10, "Initializing")
-
-            # Create pipeline context
-            context = PipelineContext(
-                circuit_source="",
-                backend_name=backend_name,
-                shots=1024,
-                options={},
-            )
+            progress_bar.update_progress(5, "Initializing")
 
             log_viewer.log_info(f"Backend: {backend_name}")
-            progress_bar.update_progress(20, "Backend selected")
+            log_viewer.log_info(f"Shots: {self._shots}")
+            progress_bar.update_progress(10, "Backend selected")
 
-            # Create and run pipeline
-            pipeline = DataFlowPipeline()
+            # Create and run pipeline with real-time progress
+            pipeline = DataFlowPipeline(
+                require_consent=False,
+                auto_approve_consent=True,
+                default_timeout=60.0,
+                max_retries=2,
+            )
+
+            # Stage progress mapping
+            stage_progress = {
+                PipelineStage.PARSING: (15, "Parsing input", 5.0),
+                PipelineStage.PLANNING: (25, "Creating execution plan", 4.0),
+                PipelineStage.RESOURCE_CHECK: (35, "Checking resources", 3.5),
+                PipelineStage.CONSENT: (40, "Consent check", 3.0),
+                PipelineStage.EXECUTING: (60, "Executing on backend", 2.0),
+                PipelineStage.COLLECTING: (75, "Collecting results", 1.0),
+                PipelineStage.ANALYZING: (85, "Analyzing results", 0.5),
+                PipelineStage.EXPORTING: (95, "Exporting data", 0.1),
+            }
 
             # Register progress callback
-            async def on_stage(stage, ctx):
-                stage_progress = {
-                    "PARSE": 30,
-                    "PLAN": 40,
-                    "RESOURCE_CHECK": 50,
-                    "CONSENT": 55,
-                    "EXECUTE": 70,
-                    "COLLECT": 80,
-                    "ANALYZE": 90,
-                    "EXPORT": 95,
-                }
-                progress = stage_progress.get(stage.name, 50)
-                log_viewer.log_info(f"Stage: {stage.name}")
-                progress_bar.update_progress(progress, stage.name)
+            def on_stage(stage, ctx):
+                if self._cancellation_requested:
+                    return
+                info = stage_progress.get(stage, (50, stage.name, 1.0))
+                log_viewer.log_info(f"Stage: {info[1]}")
+                progress_bar.update_progress(info[0], info[1])
+                eta_label.update(f"ETA: {info[2]:.1f}s")
 
             pipeline.on_stage_start(on_stage)
 
+            # Set up cancellation
+            import asyncio
+            cancellation_event = asyncio.Event()
+            pipeline.set_cancellation_event(cancellation_event)
+
             log_viewer.log_info("Running pipeline...")
-            result = await pipeline.run(context)
+            result_ctx = await pipeline.run(
+                f"simulate bell state with {self._shots} shots",
+                backend=backend_name,
+                shots=self._shots,
+            )
 
             progress_bar.update_progress(100, "Complete")
+            eta_label.update("ETA: -")
 
-            if result.success:
+            if result_ctx.current_stage.name == "COMPLETED":
                 log_viewer.log_success("Execution completed successfully")
-                if result.data:
-                    log_viewer.log_info(
-                        f"Results: {len(result.data.get('counts', {}))} outcomes"
-                    )
+                # Log result details
+                if result_ctx.backend_results:
+                    for backend, result in result_ctx.backend_results.items():
+                        counts = result.get("counts", {})
+                        duration = result.get("duration_ms", 0)
+                        log_viewer.log_info(
+                            f"  {backend}: {len(counts)} outcomes, {duration:.1f}ms"
+                        )
+                if result_ctx.insights:
+                    log_viewer.log_info("Insights:")
+                    for insight in result_ctx.insights[:5]:
+                        log_viewer.log_info(f"  • {insight}")
+            elif result_ctx.current_stage.name == "ABORTED":
+                log_viewer.log_warning("Execution was cancelled")
             else:
-                log_viewer.log_error(f"Execution failed: {result.error}")
+                last_error = ""
+                for sr in result_ctx.stage_results:
+                    if not sr.success and sr.error:
+                        last_error = sr.error
+                log_viewer.log_error(f"Execution failed: {last_error}")
 
         except ImportError as e:
             log_viewer.log_warning(f"Real execution unavailable: {e}")
             log_viewer.log_info("Falling back to demo execution...")
             await self._run_demo_execution()
+            return
         except Exception as e:
             log_viewer.log_error(f"Execution error: {e}")
             progress_bar.update_progress(0, "Failed")
+        finally:
+            self._stop_timer()
+            self._is_running = False
+            self._update_controls()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
         if event.button.id == "btn-start":
-            self._is_running = True
-            self._update_controls()
-            # Try real execution first, fall back to demo
-            self.run_worker(self._run_real_execution())
+            self._start_execution_task()
         elif event.button.id == "btn-stop":
             self.action_stop_execution()
         elif event.button.id == "btn-clear":
             self.action_clear_logs()
         elif event.button.id == "btn-export":
             log_viewer = self.query_one("#exec-logs", LogViewer)
-            await self._export_logs(log_viewer)
+            self.run_worker(self._export_logs(log_viewer))
 
 
 class ConfigurationScreen(BaseScreen):
@@ -849,7 +958,7 @@ class ConfigurationScreen(BaseScreen):
         elif event.button.id == "btn-export":
             self.run_worker(self._export_config())
         elif event.button.id == "btn-import":
-            await self._import_config()
+            self.run_worker(self._import_config())
 
 
 class ResultsScreen(BaseScreen):

@@ -1,0 +1,106 @@
+/* Extra styles for Proxima documentation */
+
+/* API Reference styling */
+.doc-heading {
+  font-weight: 600;
+  border-bottom: 2px solid var(--md-primary-fg-color);
+  padding-bottom: 0.5rem;
+  margin-top: 2rem;
+}
+
+.doc-object-name {
+  font-family: var(--md-code-font-family);
+}
+
+/* Signature styling */
+.doc-signature {
+  background: var(--md-code-bg-color);
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.doc-signature-param {
+  color: var(--md-code-hl-name-color);
+}
+
+.doc-signature-return {
+  color: var(--md-code-hl-keyword-color);
+}
+
+/* Table styling for docstring parameters */
+.doc-md-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+
+.doc-md-table th {
+  background: var(--md-primary-fg-color);
+  color: white;
+  padding: 0.75rem;
+  text-align: left;
+}
+
+.doc-md-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.doc-md-table tr:nth-child(even) {
+  background: var(--md-code-bg-color);
+}
+
+/* Source code toggle */
+.doc-source-link {
+  float: right;
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.doc-source-link:hover {
+  opacity: 1;
+}
+
+/* Module path breadcrumb */
+.doc-module-path {
+  font-size: 0.85rem;
+  color: var(--md-default-fg-color--light);
+  margin-bottom: 0.5rem;
+}
+
+/* Enhance admonitions */
+.admonition.tip {
+  border-left-color: #00c853;
+}
+
+.admonition.warning {
+  border-left-color: #ff9100;
+}
+
+.admonition.danger {
+  border-left-color: #ff1744;
+}
+
+/* Code block enhancements */
+.highlight code {
+  border-radius: 4px;
+}
+
+/* Quick links table in API reference */
+.md-typeset table:not([class]) th {
+  background: var(--md-primary-fg-color);
+  color: white;
+}
+
+/* Navigation improvements */
+.md-nav__link--active {
+  font-weight: 600;
+}
+
+/* Mobile responsiveness */
+@media screen and (max-width: 76.1875em) {
+  .doc-signature {
+    font-size: 0.85rem;
+  }
+}

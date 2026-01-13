@@ -146,6 +146,19 @@ class TaskDefinition:
     requires_consent: bool = False
     consent_reason: str | None = None
     timeout_seconds: int | None = None
+    # Enhanced: Complex task features
+    condition: str | None = None  # Condition expression for conditional execution
+    retry_count: int = 0  # Number of retries on failure
+    retry_delay_seconds: float = 1.0  # Delay between retries
+    loop_over: str | None = None  # Variable to iterate over (e.g., "backends")
+    loop_variable: str = "item"  # Name of loop iteration variable
+    parallel: bool = False  # Execute in parallel with other parallel tasks
+    group_id: str | None = None  # Group ID for task grouping
+    subtasks: list["TaskDefinition"] = field(default_factory=list)  # Nested subtasks
+    on_error: str | None = None  # Task ID to run on error
+    on_success: str | None = None  # Task ID to run on success
+    priority: int = 0  # Execution priority (higher = earlier)
+    tags: list[str] = field(default_factory=list)  # Tags for filtering
 
     def to_dict(self) -> dict:
         return {
@@ -158,6 +171,18 @@ class TaskDefinition:
             "requires_consent": self.requires_consent,
             "consent_reason": self.consent_reason,
             "timeout_seconds": self.timeout_seconds,
+            "condition": self.condition,
+            "retry_count": self.retry_count,
+            "retry_delay_seconds": self.retry_delay_seconds,
+            "loop_over": self.loop_over,
+            "loop_variable": self.loop_variable,
+            "parallel": self.parallel,
+            "group_id": self.group_id,
+            "subtasks": [s.to_dict() for s in self.subtasks],
+            "on_error": self.on_error,
+            "on_success": self.on_success,
+            "priority": self.priority,
+            "tags": self.tags,
         }
 
 
@@ -537,6 +562,37 @@ class AgentFileParser:
                 requires_consent = params.pop("requires_consent", False)
                 consent_reason = params.pop("consent_reason", None)
                 timeout_seconds = params.pop("timeout_seconds", None)
+                
+                # Extract complex task fields
+                condition = params.pop("condition", None)
+                retry_count = params.pop("retry_count", 0)
+                retry_delay_seconds = params.pop("retry_delay_seconds", 1.0)
+                loop_over = params.pop("loop_over", None)
+                loop_variable = params.pop("loop_variable", "item")
+                parallel = params.pop("parallel", False)
+                group_id = params.pop("group_id", None)
+                on_error = params.pop("on_error", None)
+                on_success = params.pop("on_success", None)
+                priority = params.pop("priority", 0)
+                tags = params.pop("tags", [])
+                if isinstance(tags, str):
+                    tags = [tags]
+                
+                # Parse subtasks if present
+                subtasks_data = params.pop("subtasks", [])
+                subtasks = []
+                for si, sub_data in enumerate(subtasks_data):
+                    if isinstance(sub_data, dict):
+                        sub_task = TaskDefinition(
+                            id=sub_data.get("id", f"{task_id}_sub_{si+1}"),
+                            name=sub_data.get("name", f"Subtask {si+1}"),
+                            type=TaskType(sub_data.get("type", "custom")),
+                            description=sub_data.get("description", ""),
+                            parameters=sub_data.get("parameters", {}),
+                            depends_on=sub_data.get("depends_on", []),
+                            timeout_seconds=sub_data.get("timeout_seconds"),
+                        )
+                        subtasks.append(sub_task)
 
                 # Remaining are task-specific parameters
                 parameters = params
@@ -549,6 +605,19 @@ class AgentFileParser:
                         section=f"task:{name}",
                     )
                 )
+                # Set defaults for complex fields when parsing fails
+                condition = None
+                retry_count = 0
+                retry_delay_seconds = 1.0
+                loop_over = None
+                loop_variable = "item"
+                parallel = False
+                group_id = None
+                on_error = None
+                on_success = None
+                priority = 0
+                tags = []
+                subtasks = []
 
         return TaskDefinition(
             id=task_id,
@@ -560,6 +629,18 @@ class AgentFileParser:
             requires_consent=requires_consent,
             consent_reason=consent_reason,
             timeout_seconds=timeout_seconds,
+            condition=condition,
+            retry_count=retry_count,
+            retry_delay_seconds=retry_delay_seconds,
+            loop_over=loop_over,
+            loop_variable=loop_variable,
+            parallel=parallel,
+            group_id=group_id,
+            subtasks=subtasks,
+            on_error=on_error,
+            on_success=on_success,
+            priority=priority,
+            tags=tags,
         )
 
     def _validate_tasks(
@@ -1242,6 +1323,294 @@ class AgentInterpreter:
                     f"Task '{task.id}' exceeded timeout of {timeout_seconds} seconds"
                 ) from err
 
+    def _evaluate_condition(
+        self,
+        condition: str,
+        context: dict[str, Any],
+    ) -> bool:
+        """Evaluate a condition expression for conditional task execution.
+        
+        Supports expressions like:
+        - "previous_task.success == True"
+        - "backend_count > 1"
+        - "results.task_1.status == 'completed'"
+        
+        Args:
+            condition: Condition expression string
+            context: Execution context with variables
+            
+        Returns:
+            Boolean result of condition evaluation
+        """
+        if not condition:
+            return True
+            
+        # Build safe evaluation namespace
+        safe_namespace = {
+            "True": True,
+            "False": False,
+            "None": None,
+            "len": len,
+            "str": str,
+            "int": int,
+            "float": float,
+            "bool": bool,
+            "any": any,
+            "all": all,
+            # Add context variables
+            **context,
+        }
+        
+        try:
+            # Simple expression evaluation
+            result = eval(condition, {"__builtins__": {}}, safe_namespace)  # noqa: S307
+            return bool(result)
+        except Exception:
+            # If evaluation fails, treat as false
+            return False
+
+    def _interpolate_parameters(
+        self,
+        parameters: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Interpolate variables in task parameters.
+        
+        Supports syntax like:
+        - "${previous_result.value}"
+        - "${config.shots}"
+        - "${loop_item.name}"
+        
+        Args:
+            parameters: Task parameters dict
+            context: Execution context with variables
+            
+        Returns:
+            Parameters with interpolated values
+        """
+        import re
+        
+        def resolve_path(path: str, ctx: dict) -> Any:
+            """Resolve a dot-separated path in context."""
+            parts = path.split(".")
+            value = ctx
+            for part in parts:
+                if isinstance(value, dict):
+                    value = value.get(part)
+                elif hasattr(value, part):
+                    value = getattr(value, part)
+                else:
+                    return None
+                if value is None:
+                    return None
+            return value
+        
+        def interpolate_value(val: Any) -> Any:
+            if isinstance(val, str):
+                # Find all ${...} patterns
+                pattern = r"\$\{([^}]+)\}"
+                matches = re.findall(pattern, val)
+                if matches:
+                    for match in matches:
+                        resolved = resolve_path(match.strip(), context)
+                        if resolved is not None:
+                            if val == f"${{{match}}}":
+                                # Full replacement - return resolved type
+                                return resolved
+                            else:
+                                # Partial replacement - convert to string
+                                val = val.replace(f"${{{match}}}", str(resolved))
+                return val
+            elif isinstance(val, dict):
+                return {k: interpolate_value(v) for k, v in val.items()}
+            elif isinstance(val, list):
+                return [interpolate_value(v) for v in val]
+            return val
+        
+        return interpolate_value(parameters)
+
+    def _execute_with_retry(
+        self,
+        task: TaskDefinition,
+        context: dict[str, Any],
+        timeout_seconds: int | None,
+    ) -> tuple[Any, int]:
+        """Execute a task with retry logic.
+        
+        Args:
+            task: Task to execute
+            context: Execution context
+            timeout_seconds: Timeout per attempt
+            
+        Returns:
+            Tuple of (result, attempts_made)
+        """
+        max_attempts = max(1, task.retry_count + 1)
+        last_error = None
+        
+        for attempt in range(max_attempts):
+            try:
+                result = self._execute_with_timeout(task, context, timeout_seconds)
+                return result, attempt + 1
+            except Exception as e:
+                last_error = e
+                if attempt < max_attempts - 1:
+                    # Wait before retry with exponential backoff
+                    delay = task.retry_delay_seconds * (2 ** attempt)
+                    time.sleep(delay)
+        
+        # All attempts failed
+        raise last_error or RuntimeError(f"Task {task.id} failed after {max_attempts} attempts")
+
+    def _expand_loop_task(
+        self,
+        task: TaskDefinition,
+        context: dict[str, Any],
+    ) -> list[TaskDefinition]:
+        """Expand a loop task into multiple task instances.
+        
+        Args:
+            task: Task with loop_over defined
+            context: Execution context containing the iterable
+            
+        Returns:
+            List of expanded task definitions
+        """
+        if not task.loop_over:
+            return [task]
+        
+        # Resolve the iterable from context
+        iterable = None
+        if task.loop_over in context:
+            iterable = context[task.loop_over]
+        elif "." in task.loop_over:
+            parts = task.loop_over.split(".")
+            value = context
+            for part in parts:
+                if isinstance(value, dict):
+                    value = value.get(part)
+                elif hasattr(value, part):
+                    value = getattr(value, part)
+                else:
+                    break
+            iterable = value
+        
+        if not iterable or not hasattr(iterable, "__iter__"):
+            return [task]
+        
+        expanded_tasks = []
+        for idx, item in enumerate(iterable):
+            # Create a new task instance for each iteration
+            expanded_task = TaskDefinition(
+                id=f"{task.id}_iter_{idx}",
+                name=f"{task.name} [{idx}]",
+                type=task.type,
+                description=task.description,
+                parameters={
+                    **task.parameters,
+                    task.loop_variable: item,
+                    "_loop_index": idx,
+                    "_loop_item": item,
+                },
+                depends_on=task.depends_on if idx == 0 else [f"{task.id}_iter_{idx-1}"],
+                requires_consent=task.requires_consent,
+                consent_reason=task.consent_reason,
+                timeout_seconds=task.timeout_seconds,
+                condition=task.condition,
+                retry_count=task.retry_count,
+                retry_delay_seconds=task.retry_delay_seconds,
+                parallel=task.parallel,
+                group_id=task.group_id or task.id,
+                on_error=task.on_error,
+                on_success=task.on_success,
+                priority=task.priority,
+                tags=[*task.tags, f"loop:{task.id}"],
+            )
+            expanded_tasks.append(expanded_task)
+        
+        return expanded_tasks
+
+    async def _execute_parallel_tasks(
+        self,
+        tasks: list[TaskDefinition],
+        context: dict[str, Any],
+        agent_file: AgentFile,
+    ) -> list[TaskResult]:
+        """Execute a group of tasks in parallel.
+        
+        Args:
+            tasks: List of tasks to execute in parallel
+            context: Shared execution context
+            agent_file: Agent file for configuration
+            
+        Returns:
+            List of task results
+        """
+        import asyncio
+        
+        async def execute_task(task: TaskDefinition) -> TaskResult:
+            task_start = time.time()
+            try:
+                # Check condition
+                if task.condition and not self._evaluate_condition(task.condition, context):
+                    return TaskResult(
+                        task_id=task.id,
+                        status=TaskStatus.SKIPPED,
+                        start_time=task_start,
+                        end_time=time.time(),
+                        error="Condition not met",
+                        metadata={"condition": task.condition},
+                    )
+                
+                # Interpolate parameters
+                interpolated_params = self._interpolate_parameters(
+                    task.parameters, context
+                )
+                task_with_interpolated = TaskDefinition(
+                    id=task.id,
+                    name=task.name,
+                    type=task.type,
+                    description=task.description,
+                    parameters=interpolated_params,
+                    depends_on=task.depends_on,
+                    timeout_seconds=task.timeout_seconds,
+                )
+                
+                task_timeout = (
+                    task.timeout_seconds or agent_file.configuration.timeout_seconds
+                )
+                
+                # Execute with retry in thread pool
+                loop = asyncio.get_event_loop()
+                result_data, attempts = await loop.run_in_executor(
+                    None,
+                    self._execute_with_retry,
+                    task_with_interpolated,
+                    context,
+                    task_timeout,
+                )
+                
+                return TaskResult(
+                    task_id=task.id,
+                    status=TaskStatus.COMPLETED,
+                    start_time=task_start,
+                    end_time=time.time(),
+                    result=result_data,
+                    metadata={"attempts": attempts},
+                )
+            except Exception as e:
+                return TaskResult(
+                    task_id=task.id,
+                    status=TaskStatus.FAILED,
+                    start_time=task_start,
+                    end_time=time.time(),
+                    error=str(e),
+                )
+        
+        # Execute all tasks concurrently
+        results = await asyncio.gather(*[execute_task(t) for t in tasks])
+        return list(results)
+
     def load_file(self, file_path: Path) -> AgentFile:
         """Load and parse an agent.md file."""
         return self.parser.parse_file(file_path)
@@ -1327,19 +1696,27 @@ class AgentInterpreter:
         agent_file: AgentFile,
         context: dict[str, Any] | None = None,
     ) -> ExecutionReport:
-        """Execute an agent.md file.
+        """Execute an agent.md file with full complex task support.
 
-        Task Execution Flow:
-        1. Display task description
-        2. Request consent for sensitive operations
-        3. Create task execution plan
-        4. Execute using standard pipeline
-        5. Collect results
-        6. Continue to next task or stop on error
+        Enhanced Task Execution Flow:
+        1. Expand loop tasks into multiple instances
+        2. Group parallel tasks together
+        3. Sort by priority and dependencies
+        4. For each task or parallel group:
+           a. Check condition expression
+           b. Display task description
+           c. Request consent for sensitive operations
+           d. Interpolate variables in parameters
+           e. Execute with retry logic
+           f. Handle on_success/on_error callbacks
+           g. Execute subtasks if present
+        5. Collect results and continue/stop based on config
 
         Returns:
             ExecutionReport with all task results
         """
+        import asyncio
+        
         start_time = time.time()
         context = context or {}
         task_results: list[TaskResult] = []
@@ -1381,77 +1758,129 @@ class AgentInterpreter:
                         errors=["Consent denied for untrusted agent file"],
                     )
 
-        # Build execution order
-        ordered_tasks = self._build_execution_order(agent_file.tasks)
-        total_tasks = len(ordered_tasks)
+        # Step 1: Expand loop tasks
+        expanded_tasks: list[TaskDefinition] = []
+        for task in agent_file.tasks:
+            if task.loop_over:
+                expanded = self._expand_loop_task(task, context)
+                expanded_tasks.extend(expanded)
+            else:
+                expanded_tasks.append(task)
 
+        # Step 2: Sort by priority (higher first), then build execution order
+        priority_sorted = sorted(expanded_tasks, key=lambda t: -t.priority)
+        ordered_tasks = self._build_execution_order(priority_sorted)
+        
+        # Step 3: Group parallel tasks
+        parallel_groups: dict[str, list[TaskDefinition]] = {}
+        sequential_tasks: list[TaskDefinition] = []
+        
+        for task in ordered_tasks:
+            if task.parallel and agent_file.configuration.parallel_execution:
+                group_id = task.group_id or "default_parallel"
+                if group_id not in parallel_groups:
+                    parallel_groups[group_id] = []
+                parallel_groups[group_id].append(task)
+            else:
+                sequential_tasks.append(task)
+
+        total_tasks = len(ordered_tasks)
         self._display(f"\nExecuting agent: {agent_file.metadata.name}")
-        self._display(f"Tasks: {total_tasks}")
+        self._display(f"Tasks: {total_tasks} ({len(parallel_groups)} parallel groups)")
         self._display("-" * 40)
 
         # Track completed task IDs for dependency checking
-        completed_tasks: set = set()
-
-        # Execute tasks
-        for i, task in enumerate(ordered_tasks):
+        completed_tasks: set[str] = set()
+        task_results_map: dict[str, TaskResult] = {}
+        
+        # Helper to execute a single task
+        def execute_single_task(
+            task: TaskDefinition,
+            task_index: int,
+        ) -> TaskResult:
             task_start = time.time()
-            self._report_progress("executing", (i / total_tasks))
 
-            # Step 1: Display task description
-            self._display(f"\n[{i+1}/{total_tasks}] Task: {task.name}")
+            # Check condition
+            if task.condition:
+                condition_context = {
+                    **context,
+                    "configuration": agent_file.configuration,
+                    "previous_results": task_results_map,
+                    "completed_tasks": list(completed_tasks),
+                }
+                if not self._evaluate_condition(task.condition, condition_context):
+                    self._display(f"\n[{task_index}/{total_tasks}] Task: {task.name} [SKIPPED - condition not met]")
+                    return TaskResult(
+                        task_id=task.id,
+                        status=TaskStatus.SKIPPED,
+                        start_time=task_start,
+                        end_time=time.time(),
+                        error="Condition not met",
+                        metadata={"condition": task.condition},
+                    )
+
+            # Display task description
+            self._display(f"\n[{task_index}/{total_tasks}] Task: {task.name}")
             if task.description:
                 self._display(f"    {task.description}")
 
             # Check dependencies are completed
             missing_deps = [d for d in task.depends_on if d not in completed_tasks]
             if missing_deps:
-                result = TaskResult(
+                return TaskResult(
                     task_id=task.id,
                     status=TaskStatus.SKIPPED,
                     start_time=task_start,
                     end_time=time.time(),
                     error=f"Dependencies not completed: {missing_deps}",
                 )
-                task_results.append(result)
-                errors.append(f"Task '{task.id}' skipped: missing dependencies")
 
-                if not agent_file.configuration.continue_on_error:
-                    break
-                continue
-
-            # Step 2: Request consent for sensitive operations
+            # Request consent for sensitive operations
             if task.requires_consent:
                 if not self._request_consent(task, agent_file):
-                    result = TaskResult(
+                    return TaskResult(
                         task_id=task.id,
                         status=TaskStatus.CANCELLED,
                         start_time=task_start,
                         end_time=time.time(),
                         error="Consent denied",
                     )
-                    task_results.append(result)
-                    errors.append(f"Task '{task.id}' cancelled: consent denied")
 
-                    if not agent_file.configuration.continue_on_error:
-                        break
-                    continue
+            # Build task context with interpolation
+            task_context = {
+                **context,
+                "configuration": agent_file.configuration,
+                "previous_results": task_results_map,
+                "completed_tasks": list(completed_tasks),
+            }
 
-            # Step 3 & 4: Create execution plan and execute
+            # Interpolate parameters
+            interpolated_params = self._interpolate_parameters(
+                task.parameters, task_context
+            )
+            
+            # Create task with interpolated parameters
+            interpolated_task = TaskDefinition(
+                id=task.id,
+                name=task.name,
+                type=task.type,
+                description=task.description,
+                parameters=interpolated_params,
+                depends_on=task.depends_on,
+                timeout_seconds=task.timeout_seconds,
+                retry_count=task.retry_count,
+                retry_delay_seconds=task.retry_delay_seconds,
+            )
+
+            # Get timeout for this task
+            task_timeout = (
+                task.timeout_seconds or agent_file.configuration.timeout_seconds
+            )
+
             try:
-                task_context = {
-                    **context,
-                    "configuration": agent_file.configuration,
-                    "previous_results": {r.task_id: r for r in task_results},
-                }
-
-                # Get timeout for this task
-                task_timeout = (
-                    task.timeout_seconds or agent_file.configuration.timeout_seconds
-                )
-
-                # Execute with timeout enforcement
-                task_result_data = self._execute_with_timeout(
-                    task, task_context, task_timeout
+                # Execute with retry logic
+                task_result_data, attempts = self._execute_with_retry(
+                    interpolated_task, task_context, task_timeout
                 )
 
                 result = TaskResult(
@@ -1460,11 +1889,12 @@ class AgentInterpreter:
                     start_time=task_start,
                     end_time=time.time(),
                     result=task_result_data,
+                    metadata={"attempts": attempts, "retry_count": task.retry_count},
                 )
-                task_results.append(result)
-                completed_tasks.add(task.id)
 
-                self._display(f"     Completed in {result.duration_ms:.2f} ms")
+                self._display(f"     Completed in {result.duration_ms:.2f} ms (attempts: {attempts})")
+                
+                return result
 
             except Exception as e:
                 result = TaskResult(
@@ -1473,15 +1903,93 @@ class AgentInterpreter:
                     start_time=task_start,
                     end_time=time.time(),
                     error=str(e),
+                    metadata={"retry_count": task.retry_count},
                 )
-                task_results.append(result)
-                errors.append(f"Task '{task.id}' failed: {e}")
 
                 self._display(f"     Failed: {e}")
+                return result
 
-                # Step 6: Continue or stop on error
+        # Execute parallel groups first (if parallel execution is enabled)
+        if agent_file.configuration.parallel_execution and parallel_groups:
+            for group_id, group_tasks in parallel_groups.items():
+                self._display(f"\n[Parallel Group: {group_id}]")
+                
+                try:
+                    # Run parallel execution
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        parallel_results = loop.run_until_complete(
+                            self._execute_parallel_tasks(group_tasks, context, agent_file)
+                        )
+                    finally:
+                        loop.close()
+                    
+                    for result in parallel_results:
+                        task_results.append(result)
+                        task_results_map[result.task_id] = result
+                        if result.status == TaskStatus.COMPLETED:
+                            completed_tasks.add(result.task_id)
+                        elif result.status == TaskStatus.FAILED:
+                            errors.append(f"Task '{result.task_id}' failed: {result.error}")
+                            
+                except Exception as e:
+                    errors.append(f"Parallel group '{group_id}' failed: {e}")
+
+        # Execute sequential tasks
+        task_index = len(task_results) + 1
+        for task in sequential_tasks:
+            self._report_progress("executing", (task_index / total_tasks))
+
+            result = execute_single_task(task, task_index)
+            task_results.append(result)
+            task_results_map[result.task_id] = result
+
+            if result.status == TaskStatus.COMPLETED:
+                completed_tasks.add(task.id)
+                
+                # Handle on_success callback
+                if task.on_success:
+                    on_success_task = agent_file.get_task(task.on_success)
+                    if on_success_task:
+                        self._display(f"    Running on_success: {task.on_success}")
+                        callback_result = execute_single_task(
+                            on_success_task, task_index
+                        )
+                        task_results.append(callback_result)
+                        task_results_map[callback_result.task_id] = callback_result
+                        
+                # Execute subtasks
+                for subtask in task.subtasks:
+                    sub_result = execute_single_task(subtask, task_index)
+                    task_results.append(sub_result)
+                    task_results_map[sub_result.task_id] = sub_result
+                    if sub_result.status == TaskStatus.COMPLETED:
+                        completed_tasks.add(subtask.id)
+
+            elif result.status == TaskStatus.FAILED:
+                errors.append(f"Task '{task.id}' failed: {result.error}")
+                
+                # Handle on_error callback
+                if task.on_error:
+                    on_error_task = agent_file.get_task(task.on_error)
+                    if on_error_task:
+                        self._display(f"    Running on_error: {task.on_error}")
+                        callback_result = execute_single_task(on_error_task, task_index)
+                        task_results.append(callback_result)
+                        task_results_map[callback_result.task_id] = callback_result
+
                 if not agent_file.configuration.continue_on_error:
                     break
+
+            elif result.status in (TaskStatus.SKIPPED, TaskStatus.CANCELLED):
+                if result.error:
+                    errors.append(f"Task '{task.id}': {result.error}")
+
+                if not agent_file.configuration.continue_on_error:
+                    break
+
+            task_index += 1
 
         self._report_progress("completed", 1.0)
 

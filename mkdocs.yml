@@ -15,6 +15,7 @@ nav:
       - Comparing Backends: user-guide/comparing-backends.md
       - Using LLM: user-guide/using-llm.md
       - Agent Files: user-guide/agent-files.md
+      - Advanced Topics: user-guide/advanced-topics.md
   - Developer Guide:
       - Architecture: developer-guide/architecture.md
       - Adding Backends: developer-guide/adding-backends.md
@@ -25,32 +26,101 @@ nav:
 
 theme:
   name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
   features:
     - navigation.tabs
     - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.expand
     - content.code.copy
-    - toc.integrate
+    - content.code.annotate
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+    - toc.follow
 
 plugins:
   - search
   - mkdocstrings:
+      default_handler: python
       handlers:
         python:
+          paths: [src]
           options:
-            show_source: false
-            members_order: alphabetical
+            # General options
+            show_source: true
+            show_bases: true
+            show_inheritance_diagram: false
+            # Headings
+            show_root_heading: true
+            show_root_full_path: false
+            show_root_toc_entry: true
+            # Members
+            members_order: source
+            group_by_category: true
+            show_category_heading: true
+            # Signatures
             separate_signature: true
+            line_length: 80
+            show_signature_annotations: true
+            # Docstrings
             docstring_style: google
+            docstring_options:
+              ignore_init_summary: false
+            docstring_section_style: table
+            merge_init_into_class: true
+            # Filters
+            show_if_no_docstring: false
+            inherited_members: false
+            # Cross-references
+            annotations_path: brief
+            show_submodules: false
 
 markdown_extensions:
   - admonition
-  - codehilite
+  - codehilite:
+      guess_lang: false
   - toc:
       permalink: true
+      toc_depth: 4
   - footnotes
   - tables
+  - attr_list
+  - md_in_html
   - pymdownx.tasklist:
       custom_checkbox: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 extra:
   social:
@@ -58,3 +128,8 @@ extra:
       link: https://github.com/example/proxima
     - icon: fontawesome/solid/book
       link: https://example.com/proxima
+  version:
+    provider: mike
+
+extra_css:
+  - stylesheets/extra.css

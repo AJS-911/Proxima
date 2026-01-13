@@ -55,6 +55,19 @@ class LLMRequest:
     system_prompt: str | None = None
     stream: bool = False  # Enable streaming response
     metadata: dict[str, str] = field(default_factory=dict)
+    # Function calling support
+    functions: list[dict[str, Any]] | None = None  # OpenAI-style function definitions
+    tools: list[dict[str, Any]] | None = None  # OpenAI tools format
+    tool_choice: str | dict[str, Any] | None = None  # "auto", "none", or specific tool
+
+
+@dataclass
+class FunctionCall:
+    """Represents a function call returned by the LLM."""
+    
+    name: str
+    arguments: dict[str, Any]
+    id: str | None = None  # Tool call ID for OpenAI
 
 
 @dataclass
@@ -70,6 +83,10 @@ class LLMResponse:
     error: str | None = None
     is_streaming: bool = False  # Whether this is a streaming response
     stream_chunks: list[str] = field(default_factory=list)  # Collected stream chunks
+    # Function calling response
+    function_call: FunctionCall | None = None  # Deprecated: use tool_calls
+    tool_calls: list[FunctionCall] = field(default_factory=list)  # Multiple tool calls
+    finish_reason: str | None = None  # "stop", "function_call", "tool_calls", etc.
 
 
 class LLMProvider(Protocol):
@@ -191,6 +208,17 @@ class OpenAIProvider(_BaseProvider):
         if request.max_tokens:
             payload["max_tokens"] = request.max_tokens
 
+        # Add function calling support
+        if request.tools:
+            payload["tools"] = request.tools
+            if request.tool_choice:
+                payload["tool_choice"] = request.tool_choice
+        elif request.functions:
+            # Legacy function calling format
+            payload["functions"] = request.functions
+            if request.tool_choice:
+                payload["function_call"] = request.tool_choice
+
         try:
             client = self._get_client()
             response = client.post(
@@ -205,8 +233,41 @@ class OpenAIProvider(_BaseProvider):
             data = response.json()
 
             elapsed = (time.perf_counter() - start) * 1000
-            text = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            message = choice["message"]
+            text = message.get("content") or ""
             tokens = data.get("usage", {}).get("total_tokens", 0)
+            finish_reason = choice.get("finish_reason")
+
+            # Parse function call response (legacy format)
+            function_call: FunctionCall | None = None
+            if "function_call" in message:
+                fc = message["function_call"]
+                try:
+                    args = json.loads(fc.get("arguments", "{}"))
+                except json.JSONDecodeError:
+                    args = {"raw": fc.get("arguments", "")}
+                function_call = FunctionCall(
+                    name=fc.get("name", ""),
+                    arguments=args,
+                )
+
+            # Parse tool calls (new format)
+            tool_calls: list[FunctionCall] | None = None
+            if "tool_calls" in message:
+                tool_calls = []
+                for tc in message["tool_calls"]:
+                    if tc.get("type") == "function":
+                        fn = tc["function"]
+                        try:
+                            args = json.loads(fn.get("arguments", "{}"))
+                        except json.JSONDecodeError:
+                            args = {"raw": fn.get("arguments", "")}
+                        tool_calls.append(FunctionCall(
+                            name=fn.get("name", ""),
+                            arguments=args,
+                            id=tc.get("id"),
+                        ))
 
             return LLMResponse(
                 text=text,
@@ -215,6 +276,9 @@ class OpenAIProvider(_BaseProvider):
                 latency_ms=elapsed,
                 tokens_used=tokens,
                 raw=data,
+                function_call=function_call,
+                tool_calls=tool_calls,
+                finish_reason=finish_reason,
             )
         except httpx.HTTPStatusError as e:
             elapsed = (time.perf_counter() - start) * 1000
@@ -450,6 +514,167 @@ class AnthropicProvider(_BaseProvider):
         except Exception:
             return False
 
+    def stream_send(
+        self,
+        request: LLMRequest,
+        api_key: str | None,
+        callback: Callable[[str], None] | None = None,
+    ) -> LLMResponse:
+        """Send a streaming request to Anthropic API."""
+        start = time.perf_counter()
+
+        if not api_key:
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=request.model or self.default_model,
+                latency_ms=0,
+                error="API key required for Anthropic",
+            )
+
+        model = request.model or self.default_model
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": request.prompt}],
+            "max_tokens": request.max_tokens or 4096,
+            "stream": True,
+        }
+
+        if request.system_prompt:
+            payload["system"] = request.system_prompt
+
+        if request.temperature > 0:
+            payload["temperature"] = request.temperature
+
+        # Add tool use support for Anthropic
+        if request.tools:
+            # Convert OpenAI tool format to Anthropic format
+            anthropic_tools = []
+            for tool in request.tools:
+                if tool.get("type") == "function":
+                    fn = tool["function"]
+                    anthropic_tools.append({
+                        "name": fn["name"],
+                        "description": fn.get("description", ""),
+                        "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+                    })
+            payload["tools"] = anthropic_tools
+
+        try:
+            client = self._get_client()
+            collected_text = ""
+            chunks: list[str] = []
+            tool_calls: list[FunctionCall] = []
+            input_tokens = 0
+            output_tokens = 0
+
+            with client.stream(
+                "POST",
+                f"{self._api_base}/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": self._api_version,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                current_tool_name = ""
+                current_tool_input = ""
+                current_tool_id = ""
+
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    event_type = data.get("type", "")
+
+                    if event_type == "content_block_start":
+                        block = data.get("content_block", {})
+                        if block.get("type") == "tool_use":
+                            current_tool_id = block.get("id", "")
+                            current_tool_name = block.get("name", "")
+                            current_tool_input = ""
+
+                    elif event_type == "content_block_delta":
+                        delta = data.get("delta", {})
+                        delta_type = delta.get("type", "")
+
+                        if delta_type == "text_delta":
+                            text = delta.get("text", "")
+                            collected_text += text
+                            chunks.append(text)
+                            if callback:
+                                callback(text)
+                        elif delta_type == "input_json_delta":
+                            current_tool_input += delta.get("partial_json", "")
+
+                    elif event_type == "content_block_stop":
+                        if current_tool_name:
+                            try:
+                                args = json.loads(current_tool_input) if current_tool_input else {}
+                            except json.JSONDecodeError:
+                                args = {"raw": current_tool_input}
+                            tool_calls.append(FunctionCall(
+                                name=current_tool_name,
+                                arguments=args,
+                                id=current_tool_id,
+                            ))
+                            current_tool_name = ""
+                            current_tool_input = ""
+                            current_tool_id = ""
+
+                    elif event_type == "message_delta":
+                        usage = data.get("usage", {})
+                        output_tokens = usage.get("output_tokens", output_tokens)
+
+                    elif event_type == "message_start":
+                        message = data.get("message", {})
+                        usage = message.get("usage", {})
+                        input_tokens = usage.get("input_tokens", 0)
+
+            elapsed = (time.perf_counter() - start) * 1000
+
+            return LLMResponse(
+                text=collected_text,
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                tokens_used=input_tokens + output_tokens,
+                is_streaming=True,
+                stream_chunks=chunks,
+                tool_calls=tool_calls if tool_calls else None,
+                finish_reason="tool_use" if tool_calls else "stop",
+            )
+        except httpx.HTTPStatusError as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=f"HTTP {e.response.status_code}: {e.response.text[:200]}",
+            )
+        except Exception as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=str(e),
+            )
+
 
 class OllamaProvider(_BaseProvider):
     """Ollama local LLM provider."""
@@ -536,6 +761,97 @@ class OllamaProvider(_BaseProvider):
             return response.status_code == 200
         except Exception:
             return False
+
+    def stream_send(
+        self,
+        request: LLMRequest,
+        api_key: str | None = None,
+        callback: Callable[[str], None] | None = None,
+    ) -> LLMResponse:
+        """Send a streaming request to Ollama server."""
+        start = time.perf_counter()
+
+        endpoint = self._endpoint or f"http://localhost:{DEFAULT_PORTS['ollama']}"
+        model = request.model or self.default_model
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "prompt": request.prompt,
+            "stream": True,
+        }
+
+        if request.system_prompt:
+            payload["system"] = request.system_prompt
+
+        options: dict[str, Any] = {}
+        if request.temperature > 0:
+            options["temperature"] = request.temperature
+        if request.max_tokens:
+            options["num_predict"] = request.max_tokens
+        if options:
+            payload["options"] = options
+
+        try:
+            client = self._get_client()
+            collected_text = ""
+            chunks: list[str] = []
+            total_tokens = 0
+
+            with client.stream(
+                "POST",
+                f"{endpoint}/api/generate",
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    text = data.get("response", "")
+                    if text:
+                        collected_text += text
+                        chunks.append(text)
+                        if callback:
+                            callback(text)
+
+                    if data.get("done"):
+                        total_tokens = data.get("eval_count", 0)
+
+            elapsed = (time.perf_counter() - start) * 1000
+
+            return LLMResponse(
+                text=collected_text,
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                tokens_used=total_tokens,
+                is_streaming=True,
+                stream_chunks=chunks,
+            )
+        except httpx.ConnectError:
+            elapsed = (time.perf_counter() - start) * 1000
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=f"Cannot connect to Ollama at {endpoint}. Is it running?",
+            )
+        except Exception as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=str(e),
+            )
 
     def set_endpoint(self, endpoint: str) -> None:
         """Set the Ollama endpoint."""
@@ -645,6 +961,97 @@ class LMStudioProvider(_BaseProvider):
             return response.status_code == 200
         except Exception:
             return False
+
+    def stream_send(
+        self,
+        request: LLMRequest,
+        api_key: str | None = None,
+        callback: Callable[[str], None] | None = None,
+    ) -> LLMResponse:
+        """Send a streaming request to LM Studio server."""
+        start = time.perf_counter()
+
+        endpoint = self._endpoint or f"http://localhost:{DEFAULT_PORTS['lmstudio']}"
+        model = request.model or self.default_model
+
+        messages = []
+        if request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        messages.append({"role": "user", "content": request.prompt})
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": request.temperature,
+            "stream": True,
+        }
+
+        if request.max_tokens:
+            payload["max_tokens"] = request.max_tokens
+
+        try:
+            client = self._get_client()
+            collected_text = ""
+            chunks: list[str] = []
+
+            with client.stream(
+                "POST",
+                f"{endpoint}/v1/chat/completions",
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = data.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        text = delta.get("content", "")
+                        if text:
+                            collected_text += text
+                            chunks.append(text)
+                            if callback:
+                                callback(text)
+
+            elapsed = (time.perf_counter() - start) * 1000
+
+            return LLMResponse(
+                text=collected_text,
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                is_streaming=True,
+                stream_chunks=chunks,
+            )
+        except httpx.ConnectError:
+            elapsed = (time.perf_counter() - start) * 1000
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=f"Cannot connect to LM Studio at {endpoint}. Is it running?",
+            )
+        except Exception as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=str(e),
+            )
 
     def set_endpoint(self, endpoint: str) -> None:
         """Set the LM Studio endpoint."""

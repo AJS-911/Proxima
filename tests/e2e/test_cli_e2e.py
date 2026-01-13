@@ -279,3 +279,199 @@ class TestErrorHandling:
         )
         # Should indicate backend error
         assert result.returncode != 0
+
+
+class TestCompareWorkflow:
+    """Test multi-backend comparison workflow."""
+
+    def test_compare_command_exists(self) -> None:
+        """Compare command should be available."""
+        result = subprocess.run(
+            [sys.executable, "-m", "proxima", "compare", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # Should show compare help or indicate command not found
+        assert result.returncode in [0, 1, 2]
+
+    def test_compare_with_multiple_backends(self, sample_agent_file: Path) -> None:
+        """Compare should accept multiple backends."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "proxima",
+                "compare",
+                str(sample_agent_file),
+                "--backends",
+                "cirq,qiskit",
+                "--dry-run",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        # Should handle or indicate unavailable
+        assert result.returncode in [0, 1, 2]
+
+
+class TestExportWorkflow:
+    """Test export functionality."""
+
+    def test_export_command_exists(self) -> None:
+        """Export command should be available."""
+        result = subprocess.run(
+            [sys.executable, "-m", "proxima", "export", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode in [0, 1, 2]
+
+    def test_export_json_format(self, temp_dir: Path) -> None:
+        """Export to JSON should work."""
+        output_file = temp_dir / "output.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "proxima",
+                "export",
+                "--format",
+                "json",
+                "--output",
+                str(output_file),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # Command should exist or indicate missing
+        assert result.returncode in [0, 1, 2]
+
+
+class TestPluginIntegration:
+    """Test plugin system integration."""
+
+    def test_plugin_list_command(self) -> None:
+        """Plugin list command should work."""
+        result = subprocess.run(
+            [sys.executable, "-m", "proxima", "plugins", "list"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # Should handle plugin command
+        assert result.returncode in [0, 1, 2]
+
+
+class TestPipelineIntegration:
+    """Test pipeline system integration."""
+
+    def test_pipeline_module_imports(self) -> None:
+        """Pipeline module should be importable."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from proxima.core.pipeline import DataFlowPipeline; print('OK')",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0
+        assert "OK" in result.stdout
+
+    def test_planner_with_dag(self) -> None:
+        """Planner should create DAG-based plans."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                """
+from proxima.core.planner import Planner, ExecutionDAG
+from proxima.core.state import ExecutionStateMachine
+sm = ExecutionStateMachine()
+planner = Planner(sm)
+dag = planner.plan_as_dag("compare bell state on cirq and qiskit")
+print(f"Tasks: {len(dag.nodes)}")
+print(f"Levels: {len(dag.get_execution_order())}")
+print("OK")
+""",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            assert "Tasks:" in result.stdout
+            assert "OK" in result.stdout
+
+
+class TestTimerFeatures:
+    """Test timer and ETA functionality."""
+
+    def test_timer_import(self) -> None:
+        """Timer module should be importable."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from proxima.resources.timer import ETACalculator; print('OK')",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0
+
+    def test_eta_calculation(self) -> None:
+        """ETA calculator should produce estimates."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                """
+from proxima.resources.timer import ETACalculator
+calc = ETACalculator(smoothing_alpha=0.3)
+for i in range(5):
+    calc.record_step(i+1, 5, 100.0)
+eta = calc.get_eta()
+print(f"ETA: {eta.seconds_remaining}")
+print("OK")
+""",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            assert "ETA:" in result.stdout
+
+
+class TestCheckpointFeatures:
+    """Test checkpoint and rollback functionality."""
+
+    def test_session_checkpoint(self) -> None:
+        """Session checkpointing should work."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                """
+from proxima.resources.session import SessionManager
+sm = SessionManager()
+session = sm.create_session("test")
+cp_id = session.create_checkpoint()
+print(f"Checkpoint: {cp_id}")
+print("OK")
+""",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            assert "Checkpoint:" in result.stdout

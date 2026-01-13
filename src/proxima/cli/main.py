@@ -1,5 +1,14 @@
 """
 Main CLI application definition.
+
+Proxima: Intelligent Quantum Simulation Orchestration Framework
+
+This CLI provides comprehensive quantum circuit simulation capabilities with:
+- Multi-backend support (LRET, Cirq, Qiskit Aer, QuEST, cuQuantum, qsim)
+- Intelligent backend auto-selection
+- LLM-powered insights and analysis
+- Multi-backend comparison
+- Resource monitoring and safety controls
 """
 
 from pathlib import Path
@@ -22,8 +31,33 @@ from proxima.utils.logging import configure_from_settings
 
 app = typer.Typer(
     name="proxima",
-    help="Proxima: Intelligent Quantum Simulation Orchestration Framework",
+    help="""Proxima: Intelligent Quantum Simulation Orchestration Framework
+
+    \b
+    COMMANDS:
+      run       - Execute quantum circuit simulations
+      compare   - Compare results across multiple backends
+      backends  - List and manage simulation backends
+      config    - View and modify configuration
+      history   - View past execution results
+      session   - Manage execution sessions
+      agent     - Run agent.md automation files
+      ui        - Launch interactive terminal UI
+    
+    \b
+    EXAMPLES:
+      proxima run "create bell state"
+      proxima run demo --backend cirq --shots 1000
+      proxima compare "quantum teleportation" --all
+      proxima backends list
+      proxima config show
+    
+    \b
+    For more information on a command, use: proxima <command> --help
+    """,
     add_completion=True,
+    no_args_is_help=True,
+    rich_markup_mode="markdown",
 )
 
 

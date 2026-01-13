@@ -848,6 +848,247 @@ class QsimAdapter(BaseBackendAdapter):
         qsim only supports state vector simulation.
         """
         return sim_type == SimulatorType.STATE_VECTOR
+        
+    # =========================================================================
+    # Step 3.3: Gate Decomposition and Circuit Conversion
+    # =========================================================================
+    
+    def convert_from_qiskit(self, qiskit_circuit: Any) -> Any:
+        """Convert a Qiskit circuit to Cirq for qsim execution.
+        
+        Step 3.2: Circuit conversion from Qiskit to Cirq.
+        
+        Args:
+            qiskit_circuit: Qiskit QuantumCircuit
+            
+        Returns:
+            Cirq Circuit equivalent
+        """
+        if not self.is_available():
+            raise BackendNotInstalledError("qsim", ["qsimcirq", "cirq"])
+            
+        import cirq
+        
+        try:
+            # Try using cirq's built-in Qiskit importer if available
+            from cirq.contrib.qasm_import import circuit_from_qasm
+            qasm = qiskit_circuit.qasm()
+            return circuit_from_qasm(qasm)
+        except (ImportError, AttributeError):
+            pass
+            
+        # Manual conversion
+        num_qubits = qiskit_circuit.num_qubits
+        qubits = cirq.LineQubit.range(num_qubits)
+        
+        cirq_ops = []
+        
+        for instruction, qargs, _ in qiskit_circuit.data:
+            gate_name = instruction.name.lower()
+            qubit_indices = [qiskit_circuit.qubits.index(q) for q in qargs]
+            target_qubits = [qubits[i] for i in qubit_indices]
+            params = list(instruction.params) if hasattr(instruction, 'params') else []
+            
+            op = self._map_qiskit_gate_to_cirq(gate_name, target_qubits, params, cirq)
+            if op is not None:
+                if isinstance(op, list):
+                    cirq_ops.extend(op)
+                else:
+                    cirq_ops.append(op)
+                    
+        return cirq.Circuit(cirq_ops)
+        
+    def _map_qiskit_gate_to_cirq(
+        self,
+        gate_name: str,
+        qubits: list,
+        params: list,
+        cirq: Any,
+    ) -> Any:
+        """Map a Qiskit gate to its Cirq equivalent.
+        
+        Args:
+            gate_name: Name of the gate
+            qubits: Target qubits
+            params: Gate parameters
+            cirq: Cirq module
+            
+        Returns:
+            Cirq operation or list of operations
+        """
+        # Single-qubit gates
+        if gate_name == 'h':
+            return cirq.H(qubits[0])
+        elif gate_name == 'x':
+            return cirq.X(qubits[0])
+        elif gate_name == 'y':
+            return cirq.Y(qubits[0])
+        elif gate_name == 'z':
+            return cirq.Z(qubits[0])
+        elif gate_name == 's':
+            return cirq.S(qubits[0])
+        elif gate_name == 'sdg':
+            return cirq.S(qubits[0]) ** -1
+        elif gate_name == 't':
+            return cirq.T(qubits[0])
+        elif gate_name == 'tdg':
+            return cirq.T(qubits[0]) ** -1
+        elif gate_name == 'sx':
+            return cirq.X(qubits[0]) ** 0.5
+        elif gate_name == 'sxdg':
+            return cirq.X(qubits[0]) ** -0.5
+            
+        # Rotation gates
+        elif gate_name == 'rx' and params:
+            return cirq.rx(float(params[0]))(qubits[0])
+        elif gate_name == 'ry' and params:
+            return cirq.ry(float(params[0]))(qubits[0])
+        elif gate_name == 'rz' and params:
+            return cirq.rz(float(params[0]))(qubits[0])
+        elif gate_name in ('p', 'u1') and params:
+            return cirq.Z(qubits[0]) ** (float(params[0]) / math.pi)
+            
+        # Two-qubit gates
+        elif gate_name in ('cx', 'cnot'):
+            return cirq.CNOT(qubits[0], qubits[1])
+        elif gate_name == 'cy':
+            return cirq.ControlledGate(cirq.Y)(qubits[0], qubits[1])
+        elif gate_name == 'cz':
+            return cirq.CZ(qubits[0], qubits[1])
+        elif gate_name == 'swap':
+            return cirq.SWAP(qubits[0], qubits[1])
+        elif gate_name == 'iswap':
+            return cirq.ISWAP(qubits[0], qubits[1])
+            
+        # Three-qubit gates
+        elif gate_name in ('ccx', 'toffoli'):
+            return cirq.TOFFOLI(qubits[0], qubits[1], qubits[2])
+        elif gate_name in ('cswap', 'fredkin'):
+            return cirq.CSWAP(qubits[0], qubits[1], qubits[2])
+            
+        # Measurement
+        elif gate_name == 'measure':
+            return cirq.measure(*qubits)
+            
+        # Barrier - no operation in Cirq
+        elif gate_name == 'barrier':
+            return None
+            
+        # U3 gate decomposition
+        elif gate_name in ('u', 'u3') and len(params) >= 3:
+            theta, phi, lam = float(params[0]), float(params[1]), float(params[2])
+            return self._decompose_u3(qubits[0], theta, phi, lam, cirq)
+            
+        # U2 gate decomposition
+        elif gate_name == 'u2' and len(params) >= 2:
+            phi, lam = float(params[0]), float(params[1])
+            return self._decompose_u3(qubits[0], math.pi / 2, phi, lam, cirq)
+            
+        else:
+            self._logger.warning(f"Unsupported gate for conversion: {gate_name}")
+            return None
+            
+    def _decompose_u3(
+        self,
+        qubit: Any,
+        theta: float,
+        phi: float,
+        lam: float,
+        cirq: Any,
+    ) -> list:
+        """Decompose U3 gate into Cirq native gates.
+        
+        U3(θ, φ, λ) = Rz(φ) · Ry(θ) · Rz(λ)
+        
+        Args:
+            qubit: Target qubit
+            theta, phi, lam: U3 gate parameters
+            cirq: Cirq module
+            
+        Returns:
+            List of Cirq operations
+        """
+        ops = []
+        if abs(lam) > 1e-10:
+            ops.append(cirq.rz(lam)(qubit))
+        if abs(theta) > 1e-10:
+            ops.append(cirq.ry(theta)(qubit))
+        if abs(phi) > 1e-10:
+            ops.append(cirq.rz(phi)(qubit))
+        return ops if ops else [cirq.I(qubit)]
+        
+    def decompose_unsupported_gates(self, circuit: Any) -> Any:
+        """Decompose unsupported gates into qsim-compatible gates.
+        
+        Step 3.4: Gate decomposition for qsim compatibility.
+        
+        Args:
+            circuit: Cirq circuit potentially containing unsupported gates
+            
+        Returns:
+            Cirq circuit with all gates decomposed to supported set
+        """
+        if not self.is_available():
+            raise BackendNotInstalledError("qsim", ["qsimcirq", "cirq"])
+            
+        import cirq
+        
+        # Use Cirq's built-in decomposition
+        # Target gateset that qsim supports well
+        gateset = cirq.SqrtIswapTargetGateset()
+        
+        try:
+            decomposed = cirq.optimize_for_target_gateset(
+                circuit,
+                gateset=gateset,
+            )
+            return decomposed
+        except Exception:
+            # Fallback: just try to decompose non-native gates
+            return cirq.decompose(circuit)
+            
+    def optimize_for_qsim(
+        self,
+        circuit: Any,
+        optimization_level: int = 1,
+    ) -> Any:
+        """Optimize a Cirq circuit for qsim execution.
+        
+        Args:
+            circuit: Cirq circuit to optimize
+            optimization_level: 0=none, 1=basic, 2=aggressive
+            
+        Returns:
+            Optimized Cirq circuit
+        """
+        if not self.is_available():
+            return circuit
+            
+        import cirq
+        
+        if optimization_level == 0:
+            return circuit
+            
+        optimized = circuit
+        
+        # Basic optimizations
+        optimized = cirq.drop_empty_moments(optimized)
+        optimized = cirq.drop_negligible_operations(optimized)
+        
+        if optimization_level >= 2:
+            # Merge single-qubit gates
+            try:
+                optimized = cirq.merge_single_qubit_gates_to_phxz(optimized)
+            except Exception:
+                pass
+                
+            # Eject Z gates to avoid them in the middle of circuits
+            try:
+                optimized = cirq.eject_z(optimized)
+            except Exception:
+                pass
+                
+        return optimized
 
 
 # =============================================================================

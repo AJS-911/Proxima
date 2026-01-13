@@ -2,17 +2,113 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import time
 import uuid
 from contextvars import ContextVar
+from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import structlog
 
 from proxima.config.settings import Settings
+
+_LEVEL_MAP = {
+    "critical": logging.CRITICAL,
+    "error": logging.ERROR,
+    "warning": logging.WARNING,
+    "info": logging.INFO,
+    "debug": logging.DEBUG,
+}
+
+
+def _json_serializer(obj: Any, **kwargs: Any) -> str:
+    """Custom JSON serializer that handles special types for log output.
+    
+    Handles:
+    - datetime objects -> ISO format strings
+    - Path objects -> string paths
+    - Enum values -> their value
+    - numpy arrays -> lists
+    - bytes -> base64 or hex encoded
+    - sets -> sorted lists
+    - Complex numbers -> dict with real/imag
+    - Any object with __dict__ -> dict representation
+    """
+    return json.dumps(obj, default=_json_default, **kwargs)
+
+
+def _json_default(obj: Any) -> Any:
+    """Default handler for JSON serialization of special types."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, bytes):
+        try:
+            return obj.decode("utf-8")
+        except UnicodeDecodeError:
+            return obj.hex()
+    if isinstance(obj, set):
+        return sorted(list(obj), key=str)
+    if isinstance(obj, complex):
+        return {"real": obj.real, "imag": obj.imag}
+    if hasattr(obj, "__dict__"):
+        return {k: v for k, v in obj.__dict__.items() if not k.startswith("_")}
+    # Try numpy array conversion
+    try:
+        if hasattr(obj, "tolist"):
+            return obj.tolist()
+    except Exception:
+        pass
+    # Fallback to string representation
+    return str(obj)
+
+
+def _sanitize_event_dict(
+    logger: logging.Logger,
+    method_name: str,
+    event_dict: dict[str, Any],
+) -> dict[str, Any]:
+    """Sanitize event dict for JSON serialization.
+    
+    - Converts non-serializable types to strings
+    - Truncates very long strings
+    - Handles circular references
+    """
+    MAX_STRING_LENGTH = 10000
+    
+    def sanitize_value(value: Any, depth: int = 0) -> Any:
+        if depth > 10:  # Prevent infinite recursion
+            return "<max depth exceeded>"
+            
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if len(value) > MAX_STRING_LENGTH:
+                return value[:MAX_STRING_LENGTH] + "...<truncated>"
+            return value
+        if isinstance(value, (list, tuple)):
+            return [sanitize_value(v, depth + 1) for v in value[:100]]  # Limit list size
+        if isinstance(value, dict):
+            return {
+                str(k): sanitize_value(v, depth + 1)
+                for k, v in list(value.items())[:50]  # Limit dict size
+            }
+        # Use the default serializer for other types
+        try:
+            return _json_default(value)
+        except Exception:
+            return str(value)
+    
+    return {k: sanitize_value(v) for k, v in event_dict.items()}
 
 _LEVEL_MAP = {
     "critical": logging.CRITICAL,
@@ -113,11 +209,15 @@ def configure_logging(
     log_level = _resolve_level(level)
     is_json = output_format.lower() == "json"
 
-    renderer = (
-        structlog.processors.JSONRenderer()
-        if is_json
-        else structlog.dev.ConsoleRenderer(colors=color)
-    )
+    # Configure JSON renderer with proper formatting
+    if is_json:
+        # Use JSONRenderer with proper formatting for machine parsing
+        renderer = structlog.processors.JSONRenderer(
+            serializer=_json_serializer,
+            sort_keys=True,
+        )
+    else:
+        renderer = structlog.dev.ConsoleRenderer(colors=color)
 
     timestamper = structlog.processors.TimeStamper(fmt="iso")
 
@@ -128,9 +228,11 @@ def configure_logging(
             structlog.stdlib.add_log_level,
             structlog.stdlib.PositionalArgumentsFormatter(),
             _add_execution_context,  # type: ignore[list-item]
+            _sanitize_event_dict,  # Sanitize for JSON output
             timestamper,
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
             renderer,
         ],
         context_class=dict,

@@ -79,7 +79,7 @@ docker-compose build proxima
 
 Pre-built executables for users without Python.
 
-**Built using:** PyInstaller (via GitHub Actions)
+**Built using:** PyInstaller (via GitHub Actions or locally)
 
 **Platforms:**
 
@@ -88,11 +88,60 @@ Pre-built executables for users without Python.
 - macOS arm64 (Apple Silicon)
 - Windows x86_64
 
-**Manual build:**
+**Files involved:**
+
+- `proxima.spec` - PyInstaller spec file with full configuration
+- `build_binary.py` - Build script with verification and checksums
+
+**Quick build:**
+
+```bash
+# Install packaging dependencies
+pip install proxima-agent[packaging]
+
+# Build using spec file (recommended)
+python packaging/build_binary.py
+
+# Build with simple onefile mode
+python packaging/build_binary.py --onefile
+
+# Clean build
+python packaging/build_binary.py --clean
+
+# Debug build
+python packaging/build_binary.py --debug
+```
+
+**Output:**
+
+The build creates:
+
+- `dist/proxima-<platform>.exe` (Windows) or `dist/proxima-<platform>` (Unix)
+- `dist/proxima-<platform>.sha256` (checksum file)
+
+**Manual build with PyInstaller:**
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --name proxima src/proxima/__main__.py
+cd packaging
+pyinstaller proxima.spec --clean
+```
+
+**Cross-platform builds:**
+
+For cross-platform builds, use GitHub Actions or build on native platforms:
+
+```yaml
+# Example GitHub Actions matrix
+strategy:
+  matrix:
+    os: [ubuntu-latest, macos-latest, windows-latest]
+runs-on: ${{ matrix.os }}
+steps:
+  - uses: actions/checkout@v4
+  - uses: actions/setup-python@v5
+  - run: pip install .[packaging]
+  - run: python packaging/build_binary.py
 ```
 
 ## GitHub Actions Workflows

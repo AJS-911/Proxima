@@ -47,13 +47,37 @@ class SessionMetadata:
 
 @dataclass
 class SessionCheckpoint:
-    """Checkpoint within a session for recovery."""
+    """Checkpoint within a session for recovery.
+    
+    Enhanced with rollback support:
+    - Full state snapshot for complete restoration
+    - Dependency tracking for selective rollback
+    - Metadata for debugging and audit
+    """
 
     id: str
     timestamp: float
     stage: str
     state: dict[str, Any]
     message: str | None = None
+    
+    # Enhanced rollback support
+    parent_checkpoint_id: str | None = None  # For checkpoint chain
+    state_hash: str | None = None  # For integrity verification
+    dependencies: list[str] = field(default_factory=list)  # External dependencies
+    rollback_actions: list[dict[str, Any]] = field(default_factory=list)  # Actions to undo
+    
+    def compute_hash(self) -> str:
+        """Compute hash of state for integrity verification."""
+        import hashlib
+        state_str = json.dumps(self.state, sort_keys=True, default=str)
+        return hashlib.sha256(state_str.encode()).hexdigest()[:16]
+    
+    def verify_integrity(self) -> bool:
+        """Verify checkpoint integrity using stored hash."""
+        if self.state_hash is None:
+            return True  # No hash stored, assume valid
+        return self.compute_hash() == self.state_hash
 
 
 @dataclass
@@ -98,15 +122,35 @@ class Session:
         stage: str,
         state: dict[str, Any],
         message: str | None = None,
+        rollback_actions: list[dict[str, Any]] | None = None,
     ) -> SessionCheckpoint:
-        """Create a checkpoint."""
+        """Create a checkpoint with enhanced rollback support.
+        
+        Args:
+            stage: Current execution stage name
+            state: State dict to checkpoint
+            message: Optional description
+            rollback_actions: Optional list of actions to execute on rollback
+                Each action is a dict with 'type' and parameters
+        
+        Returns:
+            Created checkpoint
+        """
+        # Get parent checkpoint ID if exists
+        parent_id = self.checkpoints[-1].id if self.checkpoints else None
+        
         cp = SessionCheckpoint(
             id=str(uuid.uuid4())[:8],
             timestamp=time.time(),
             stage=stage,
             state=state.copy(),
             message=message,
+            parent_checkpoint_id=parent_id,
+            rollback_actions=rollback_actions or [],
         )
+        # Compute and store hash for integrity verification
+        cp.state_hash = cp.compute_hash()
+        
         self.checkpoints.append(cp)
         self.metadata.updated_at = time.time()
         return cp
@@ -114,6 +158,143 @@ class Session:
     def latest_checkpoint(self) -> SessionCheckpoint | None:
         """Get the most recent checkpoint."""
         return self.checkpoints[-1] if self.checkpoints else None
+    
+    def get_checkpoint(self, checkpoint_id: str) -> SessionCheckpoint | None:
+        """Get checkpoint by ID."""
+        for cp in self.checkpoints:
+            if cp.id == checkpoint_id:
+                return cp
+        return None
+    
+    def get_checkpoint_by_stage(self, stage: str) -> SessionCheckpoint | None:
+        """Get the most recent checkpoint for a specific stage."""
+        for cp in reversed(self.checkpoints):
+            if cp.stage == stage:
+                return cp
+        return None
+    
+    def rollback_to(
+        self,
+        checkpoint_id: str,
+        execute_rollback_actions: bool = True,
+    ) -> tuple[bool, list[str]]:
+        """Rollback session state to a specific checkpoint.
+        
+        Args:
+            checkpoint_id: ID of checkpoint to rollback to
+            execute_rollback_actions: Whether to execute stored rollback actions
+        
+        Returns:
+            Tuple of (success, list of executed action descriptions)
+        """
+        target_cp = self.get_checkpoint(checkpoint_id)
+        if not target_cp:
+            return False, [f"Checkpoint {checkpoint_id} not found"]
+        
+        # Verify integrity
+        if not target_cp.verify_integrity():
+            return False, ["Checkpoint integrity verification failed"]
+        
+        executed_actions: list[str] = []
+        
+        # Execute rollback actions for all checkpoints after target (in reverse)
+        if execute_rollback_actions:
+            target_idx = self.checkpoints.index(target_cp)
+            for cp in reversed(self.checkpoints[target_idx + 1:]):
+                for action in cp.rollback_actions:
+                    action_desc = self._execute_rollback_action(action)
+                    if action_desc:
+                        executed_actions.append(action_desc)
+        
+        # Restore state from checkpoint
+        self.state = target_cp.state.copy()
+        
+        # Remove checkpoints after target
+        target_idx = self.checkpoints.index(target_cp)
+        self.checkpoints = self.checkpoints[:target_idx + 1]
+        
+        self.metadata.updated_at = time.time()
+        self.add_log("info", f"Rolled back to checkpoint {checkpoint_id}", 
+                     stage=target_cp.stage)
+        
+        return True, executed_actions
+    
+    def _execute_rollback_action(self, action: dict[str, Any]) -> str | None:
+        """Execute a single rollback action.
+        
+        Supported action types:
+        - 'delete_file': Remove a file (path in 'path')
+        - 'restore_file': Restore file content (path, content)
+        - 'set_config': Set config value (key, value)
+        - 'cleanup_temp': Remove temporary data (prefix)
+        - 'custom': Execute custom callback (callback_name, args)
+        
+        Returns:
+            Description of executed action, or None if no action taken
+        """
+        action_type = action.get('type')
+        
+        if action_type == 'delete_file':
+            from pathlib import Path
+            path = Path(action.get('path', ''))
+            if path.exists():
+                path.unlink()
+                return f"Deleted file: {path}"
+        
+        elif action_type == 'restore_file':
+            from pathlib import Path
+            path = Path(action.get('path', ''))
+            content = action.get('content', '')
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            return f"Restored file: {path}"
+        
+        elif action_type == 'set_config':
+            key = action.get('key')
+            value = action.get('value')
+            if key:
+                self.config[key] = value
+                return f"Set config: {key}"
+        
+        elif action_type == 'cleanup_temp':
+            prefix = action.get('prefix', '')
+            # Clean up temporary data with prefix
+            keys_to_remove = [k for k in self.state.keys() if k.startswith(prefix)]
+            for k in keys_to_remove:
+                del self.state[k]
+            if keys_to_remove:
+                return f"Cleaned temp data: {prefix}*"
+        
+        elif action_type == 'custom':
+            callback_name = action.get('callback_name')
+            return f"Custom rollback: {callback_name}"
+        
+        return None
+    
+    def rollback_to_stage(self, stage: str) -> tuple[bool, list[str]]:
+        """Rollback to the most recent checkpoint of a specific stage."""
+        cp = self.get_checkpoint_by_stage(stage)
+        if cp:
+            return self.rollback_to(cp.id)
+        return False, [f"No checkpoint found for stage: {stage}"]
+    
+    def can_rollback(self) -> bool:
+        """Check if rollback is possible (has at least 2 checkpoints)."""
+        return len(self.checkpoints) >= 2
+    
+    def get_rollback_chain(self) -> list[dict[str, Any]]:
+        """Get list of checkpoints for rollback visualization."""
+        return [
+            {
+                'id': cp.id,
+                'stage': cp.stage,
+                'timestamp': cp.timestamp,
+                'message': cp.message,
+                'has_rollback_actions': len(cp.rollback_actions) > 0,
+                'is_valid': cp.verify_integrity(),
+            }
+            for cp in self.checkpoints
+        ]
 
     def add_log(self, level: str, message: str, **extra: Any) -> None:
         """Add a log entry."""

@@ -769,6 +769,322 @@ class VisualizationRecommender:
 
 
 # =============================================================================
+# ASCII Visualization Renderer
+# =============================================================================
+
+
+class ASCIIVisualizer:
+    """Renders ASCII visualizations for terminal output."""
+
+    # Unicode block characters for bar charts
+    BLOCKS = " ▏▎▍▌▋▊▉█"
+
+    def __init__(
+        self,
+        width: int = 50,
+        height: int = 10,
+        use_unicode: bool = True,
+    ) -> None:
+        """
+        Initialize visualizer.
+
+        Args:
+            width: Maximum width for visualizations.
+            height: Maximum height for vertical charts.
+            use_unicode: Whether to use Unicode characters.
+        """
+        self.width = width
+        self.height = height
+        self.use_unicode = use_unicode
+
+    def render_bar_chart(
+        self,
+        probabilities: dict[str, float],
+        top_k: int = 10,
+        show_values: bool = True,
+    ) -> str:
+        """
+        Render horizontal bar chart of probabilities.
+
+        Args:
+            probabilities: State -> probability mapping.
+            top_k: Number of top states to show.
+            show_values: Whether to show probability values.
+
+        Returns:
+            ASCII bar chart string.
+        """
+        if not probabilities:
+            return "No data to display"
+
+        # Sort by probability and take top k
+        sorted_probs = sorted(
+            probabilities.items(), key=lambda x: x[1], reverse=True
+        )[:top_k]
+
+        if not sorted_probs:
+            return "No data to display"
+
+        max_prob = max(p for _, p in sorted_probs)
+        max_state_len = max(len(s) for s, _ in sorted_probs)
+        bar_width = self.width - max_state_len - 12  # Space for state + value
+
+        lines = []
+        for state, prob in sorted_probs:
+            # Calculate bar length
+            bar_len = int((prob / max_prob) * bar_width) if max_prob > 0 else 0
+
+            if self.use_unicode:
+                # Use fractional blocks for smooth bars
+                full_blocks = bar_len
+                bar = "█" * full_blocks
+            else:
+                bar = "#" * bar_len
+
+            state_padded = state.rjust(max_state_len)
+
+            if show_values:
+                line = f"{state_padded} │{bar.ljust(bar_width)} {prob:6.2%}"
+            else:
+                line = f"{state_padded} │{bar}"
+
+            lines.append(line)
+
+        # Add summary line
+        other_count = len(probabilities) - len(sorted_probs)
+        if other_count > 0:
+            other_prob = sum(
+                p for s, p in probabilities.items()
+                if s not in dict(sorted_probs)
+            )
+            lines.append(f"{'...' + str(other_count) + ' more':>{max_state_len}} │{'':.<{bar_width}} {other_prob:6.2%}")
+
+        return "\n".join(lines)
+
+    def render_histogram(
+        self,
+        probabilities: dict[str, float],
+        bins: int = 10,
+    ) -> str:
+        """
+        Render vertical histogram of probability distribution.
+
+        Args:
+            probabilities: State -> probability mapping.
+            bins: Number of bins for histogram.
+
+        Returns:
+            ASCII histogram string.
+        """
+        if not probabilities:
+            return "No data to display"
+
+        values = list(probabilities.values())
+        min_val, max_val = min(values), max(values)
+
+        if max_val == min_val:
+            # All same value
+            return f"Uniform distribution: all states at {max_val:.2%}"
+
+        # Create bins
+        bin_width = (max_val - min_val) / bins
+        bin_counts = [0] * bins
+
+        for v in values:
+            bin_idx = min(int((v - min_val) / bin_width), bins - 1)
+            bin_counts[bin_idx] += 1
+
+        max_count = max(bin_counts)
+        if max_count == 0:
+            return "No data to display"
+
+        # Render vertical bars
+        lines = []
+        for row in range(self.height, 0, -1):
+            threshold = (row / self.height) * max_count
+            chars = []
+            for count in bin_counts:
+                if count >= threshold:
+                    chars.append("█" if self.use_unicode else "#")
+                else:
+                    chars.append(" ")
+            lines.append("│" + "".join(chars))
+
+        # Add x-axis
+        lines.append("└" + "─" * bins)
+        lines.append(f" {min_val:.1%}{'':^{bins-8}}{max_val:.1%}")
+
+        return "\n".join(lines)
+
+    def render_sparkline(
+        self,
+        values: list[float],
+        width: int | None = None,
+    ) -> str:
+        """
+        Render a sparkline for a series of values.
+
+        Args:
+            values: List of values to plot.
+            width: Optional width (will sample if values exceed).
+
+        Returns:
+            Single-line sparkline string.
+        """
+        if not values:
+            return ""
+
+        width = width or self.width
+
+        # Sample if too many values
+        if len(values) > width:
+            step = len(values) / width
+            sampled = [values[int(i * step)] for i in range(width)]
+            values = sampled
+
+        min_val, max_val = min(values), max(values)
+        val_range = max_val - min_val
+
+        if val_range == 0:
+            return "▄" * len(values)  # Flat line
+
+        # Map to 8 levels (block characters)
+        blocks = "▁▂▃▄▅▆▇█"
+        result = []
+        for v in values:
+            level = int(((v - min_val) / val_range) * 7)
+            result.append(blocks[level])
+
+        return "".join(result)
+
+    def render_heatmap(
+        self,
+        matrix: list[list[float]],
+        row_labels: list[str] | None = None,
+        col_labels: list[str] | None = None,
+    ) -> str:
+        """
+        Render an ASCII heatmap.
+
+        Args:
+            matrix: 2D list of values.
+            row_labels: Optional row labels.
+            col_labels: Optional column labels.
+
+        Returns:
+            ASCII heatmap string.
+        """
+        if not matrix or not matrix[0]:
+            return "No data to display"
+
+        # Find value range
+        all_vals = [v for row in matrix for v in row]
+        min_val, max_val = min(all_vals), max(all_vals)
+        val_range = max_val - min_val if max_val != min_val else 1
+
+        # Heat characters (light to dark)
+        if self.use_unicode:
+            heat_chars = " ░▒▓█"
+        else:
+            heat_chars = " .:-=#"
+
+        lines = []
+
+        # Column labels
+        if col_labels:
+            header = "  " + "".join(c[0] if c else " " for c in col_labels)
+            lines.append(header)
+
+        for i, row in enumerate(matrix):
+            chars = []
+            for v in row:
+                level = int(((v - min_val) / val_range) * (len(heat_chars) - 1))
+                chars.append(heat_chars[level])
+
+            row_label = row_labels[i] if row_labels and i < len(row_labels) else str(i)
+            lines.append(f"{row_label[0]} " + "".join(chars))
+
+        return "\n".join(lines)
+
+    def render_qubit_correlations(
+        self,
+        probabilities: dict[str, float],
+    ) -> str:
+        """
+        Render qubit correlation matrix from probability distribution.
+
+        Args:
+            probabilities: State -> probability mapping (binary strings).
+
+        Returns:
+            ASCII correlation heatmap.
+        """
+        if not probabilities:
+            return "No data to display"
+
+        # Get number of qubits
+        states = list(probabilities.keys())
+        try:
+            n_qubits = len(states[0])
+            if not all(len(s) == n_qubits and set(s) <= {"0", "1"} for s in states):
+                return "States must be binary strings of equal length"
+        except (TypeError, ValueError):
+            return "Invalid state format"
+
+        # Compute correlation matrix
+        # correlation[i][j] = P(qubit_i = qubit_j)
+        corr_matrix: list[list[float]] = []
+        labels = [f"q{i}" for i in range(n_qubits)]
+
+        for i in range(n_qubits):
+            row = []
+            for j in range(n_qubits):
+                # P(qi = qj)
+                agreement_prob = sum(
+                    p for s, p in probabilities.items()
+                    if s[i] == s[j]
+                )
+                row.append(agreement_prob)
+            corr_matrix.append(row)
+
+        return self.render_heatmap(corr_matrix, labels, labels)
+
+    def render_state_distribution(
+        self,
+        probabilities: dict[str, float],
+    ) -> str:
+        """
+        Render a compact state distribution view.
+
+        Args:
+            probabilities: State -> probability mapping.
+
+        Returns:
+            Compact distribution visualization.
+        """
+        if not probabilities:
+            return "No data to display"
+
+        # Sort by state (binary order)
+        sorted_probs = sorted(probabilities.items())
+
+        # Render as sparkline
+        values = [p for _, p in sorted_probs]
+        sparkline = self.render_sparkline(values)
+
+        # Summary stats
+        max_state, max_prob = max(probabilities.items(), key=lambda x: x[1])
+        min_prob = min(probabilities.values())
+
+        lines = [
+            sparkline,
+            f"States: {len(probabilities)} | Max: {max_state}={max_prob:.2%} | Min: {min_prob:.2%}",
+        ]
+
+        return "\n".join(lines)
+
+
+# =============================================================================
 # LLM Integration
 # =============================================================================
 
@@ -919,6 +1235,7 @@ class InsightEngine:
         self._recommendation_engine = RecommendationEngine()
         self._viz_recommender = VisualizationRecommender()
         self._llm_synthesizer = LLMSynthesizer(llm_callback)
+        self._ascii_viz = ASCIIVisualizer()
 
     def analyze(
         self,
@@ -1100,6 +1417,136 @@ class InsightEngine:
 
         return warnings
 
+    def render_visualization(
+        self,
+        probabilities: dict[str, float],
+        viz_type: str = "bar",
+        **kwargs: Any,
+    ) -> str:
+        """
+        Render an ASCII visualization of the results.
+
+        Args:
+            probabilities: State -> probability mapping.
+            viz_type: Type of visualization ('bar', 'histogram', 'sparkline',
+                      'heatmap', 'correlations', 'distribution').
+            **kwargs: Additional options for the visualization.
+
+        Returns:
+            ASCII visualization string.
+        """
+        if viz_type == "bar":
+            return self._ascii_viz.render_bar_chart(
+                probabilities,
+                top_k=kwargs.get("top_k", 10),
+                show_values=kwargs.get("show_values", True),
+            )
+        elif viz_type == "histogram":
+            return self._ascii_viz.render_histogram(
+                probabilities,
+                bins=kwargs.get("bins", 10),
+            )
+        elif viz_type == "sparkline":
+            values = list(sorted(probabilities.values(), reverse=True))
+            return self._ascii_viz.render_sparkline(
+                values,
+                width=kwargs.get("width"),
+            )
+        elif viz_type == "correlations":
+            return self._ascii_viz.render_qubit_correlations(probabilities)
+        elif viz_type == "distribution":
+            return self._ascii_viz.render_state_distribution(probabilities)
+        else:
+            return f"Unknown visualization type: {viz_type}"
+
+    def full_report(
+        self,
+        probabilities: dict[str, float],
+        amplitudes: dict[str, complex] | None = None,
+        circuit_info: dict[str, Any] | None = None,
+        include_viz: bool = True,
+    ) -> str:
+        """
+        Generate a complete text report with visualizations.
+
+        Args:
+            probabilities: State -> probability mapping.
+            amplitudes: Optional amplitudes.
+            circuit_info: Optional circuit metadata.
+            include_viz: Whether to include ASCII visualizations.
+
+        Returns:
+            Complete report as string.
+        """
+        report = self.analyze(
+            probabilities, amplitudes, circuit_info, InsightLevel.DETAILED
+        )
+
+        lines = [
+            "=" * 60,
+            "QUANTUM SIMULATION ANALYSIS REPORT",
+            "=" * 60,
+            "",
+            "## Summary",
+            report.summary,
+            "",
+            "## Key Findings",
+        ]
+
+        for finding in report.key_findings:
+            lines.append(f"  • {finding}")
+
+        lines.extend(["", "## Patterns Detected"])
+        for pattern in report.patterns:
+            lines.append(
+                f"  • {pattern.pattern_type.value} ({pattern.confidence:.0%}): "
+                f"{pattern.description}"
+            )
+
+        if include_viz:
+            lines.extend([
+                "",
+                "## State Probability Distribution",
+                self.render_visualization(probabilities, "bar", top_k=8),
+            ])
+
+            # Add correlation matrix for multi-qubit systems
+            if report.statistics.total_states > 4:
+                try:
+                    corr_viz = self.render_visualization(
+                        probabilities, "correlations"
+                    )
+                    if "must be binary" not in corr_viz.lower():
+                        lines.extend([
+                            "",
+                            "## Qubit Correlations",
+                            corr_viz,
+                        ])
+                except Exception:
+                    pass  # Skip if correlation rendering fails
+
+        if report.recommendations:
+            lines.extend(["", "## Recommendations"])
+            for rec in report.recommendations:
+                priority_marker = "!" * (4 - rec.priority)
+                lines.append(f"  [{priority_marker}] {rec.title}: {rec.description}")
+
+        if report.warnings:
+            lines.extend(["", "## Warnings"])
+            for warning in report.warnings:
+                lines.append(f"  ⚠ {warning}")
+
+        if report.llm_synthesis:
+            lines.extend([
+                "",
+                "## AI Analysis",
+                report.llm_synthesis,
+            ])
+
+        lines.extend(["", "=" * 60])
+
+        return "\n".join(lines)
+
 
 # =============================================================================
 # Convenience Functions
@@ -1136,3 +1583,44 @@ def summarize_results(probabilities: dict[str, float]) -> str:
     """
     engine = InsightEngine()
     return engine.quick_analyze(probabilities)
+
+
+def visualize_results(
+    probabilities: dict[str, float],
+    viz_type: str = "bar",
+    **kwargs: Any,
+) -> str:
+    """
+    Generate ASCII visualization of results.
+
+    Args:
+        probabilities: Mapping of state -> probability.
+        viz_type: Type of visualization ('bar', 'histogram', 'sparkline',
+                  'correlations', 'distribution').
+        **kwargs: Additional visualization options.
+
+    Returns:
+        ASCII visualization string.
+    """
+    engine = InsightEngine()
+    return engine.render_visualization(probabilities, viz_type, **kwargs)
+
+
+def full_analysis_report(
+    probabilities: dict[str, float],
+    amplitudes: dict[str, complex] | None = None,
+    circuit_info: dict[str, Any] | None = None,
+) -> str:
+    """
+    Generate a complete analysis report with visualizations.
+
+    Args:
+        probabilities: Mapping of state -> probability.
+        amplitudes: Optional amplitudes.
+        circuit_info: Optional circuit metadata.
+
+    Returns:
+        Complete report as string.
+    """
+    engine = InsightEngine()
+    return engine.full_report(probabilities, amplitudes, circuit_info)
