@@ -203,17 +203,18 @@ class TestCircuitExecution:
         result = lret_adapter.execute(sample_circuit, shots=1000)
         
         assert result is not None
-        assert result.result_type in (ResultType.COUNTS, ResultType.STATE_VECTOR)
-        assert "backend" in result.metadata
-        assert result.metadata["backend"] == "lret"
+        assert result.result_type in (ResultType.COUNTS, ResultType.STATEVECTOR)
+        assert result.backend is not None
+        assert result.backend == "lret"
 
     def test_execute_with_counts(self, lret_adapter: LRETBackendAdapter, sample_circuit: dict) -> None:
         """Test execution returns measurement counts."""
         result = lret_adapter.execute(sample_circuit, shots=1000)
         
-        if result.counts:
-            assert isinstance(result.counts, dict)
-            total_shots = sum(result.counts.values())
+        counts = result.data.get("counts")
+        if counts:
+            assert isinstance(counts, dict)
+            total_shots = sum(counts.values())
             assert total_shots == 1000
 
     def test_execute_ghz_circuit(self, lret_adapter: LRETBackendAdapter, sample_ghz_circuit: dict) -> None:
@@ -221,7 +222,7 @@ class TestCircuitExecution:
         result = lret_adapter.execute(sample_ghz_circuit, shots=1000)
         
         assert result is not None
-        assert result.result_type in (ResultType.COUNTS, ResultType.STATE_VECTOR)
+        assert result.result_type in (ResultType.COUNTS, ResultType.STATEVECTOR)
 
     def test_execute_with_seed(self, lret_adapter: LRETBackendAdapter, sample_circuit: dict) -> None:
         """Test deterministic execution with seed."""
@@ -229,15 +230,16 @@ class TestCircuitExecution:
         result2 = lret_adapter.execute(sample_circuit, shots=100, seed=42)
         
         # With same seed, results should be identical
-        assert result1.counts == result2.counts
+        assert result1.data.get("counts") == result2.data.get("counts")
 
     def test_execute_different_shots(self, lret_adapter: LRETBackendAdapter, sample_circuit: dict) -> None:
         """Test execution with different shot counts."""
         for shots in [100, 500, 1000]:
             result = lret_adapter.execute(sample_circuit, shots=shots)
             
-            if result.counts:
-                total = sum(result.counts.values())
+            counts = result.data.get("counts")
+        if counts:
+                total = sum(counts.values())
                 assert total == shots
 
     def test_execute_zero_shots_returns_statevector(self, lret_adapter: LRETBackendAdapter, sample_circuit: dict) -> None:
@@ -246,7 +248,7 @@ class TestCircuitExecution:
         
         assert result is not None
         # Should have statevector in this case
-        assert result.statevector is not None or result.counts is not None
+        assert result.data.get("statevector") is not None or result.data.get("counts") is not None
 
 
 # ==============================================================================
@@ -444,8 +446,9 @@ class TestMockSimulator:
         result = mock_simulator.run(sample_circuit, shots=1000)
         
         assert isinstance(result, MockLRETResult)
-        assert result.counts is not None
-        assert sum(result.counts.values()) == 1000
+        counts = result.counts
+        assert counts is not None
+        assert sum(counts.values()) == 1000
 
     def test_simulator_seed(self, mock_simulator: MockLRETSimulator, sample_circuit: dict) -> None:
         """Test deterministic results with seed."""
@@ -513,9 +516,10 @@ class TestMockSimulator:
         result = mock_simulator.run(circuit, shots=1000)
         
         # Bell state should give roughly equal 00 and 11
-        assert result.counts is not None
+        counts = result.counts
+        assert counts is not None
         # At least should have some 00 and 11 outcomes
-        total = sum(result.counts.values())
+        total = sum(counts.values())
         assert total == 1000
 
 
@@ -665,8 +669,9 @@ class TestEdgeCases:
         result = lret_adapter.execute(circuit, shots=100)
         
         assert result is not None
-        if result.counts:
-            assert all(len(k) == 1 for k in result.counts.keys())
+        counts = result.data.get("counts")
+        if counts:
+            assert all(len(k) == 1 for k in counts.keys())
 
     def test_large_qubit_circuit(self, lret_adapter: LRETBackendAdapter) -> None:
         """Test larger qubit circuit."""
@@ -698,16 +703,17 @@ class TestEdgeCases:
         result = lret_adapter.execute(sample_circuit, shots=10000)
         
         assert result is not None
-        if result.counts:
-            assert sum(result.counts.values()) == 10000
+        counts = result.data.get("counts")
+        if counts:
+            assert sum(counts.values()) == 10000
 
     def test_execution_metadata(self, lret_adapter: LRETBackendAdapter, sample_circuit: dict) -> None:
         """Test execution result contains proper metadata."""
         result = lret_adapter.execute(sample_circuit, shots=100)
         
         assert result.metadata is not None
-        assert "backend" in result.metadata
-        assert "execution_time_ms" in result.metadata
+        assert result.backend is not None
+        assert result.execution_time_ms is not None
         assert result.metadata["normalized"] is True
 
 
@@ -746,8 +752,9 @@ class TestIntegration:
         assert result is not None
         
         # Check result structure
-        if result.counts:
-            assert sum(result.counts.values()) == 1000
+        counts = result.data.get("counts")
+        if counts:
+            assert sum(counts.values()) == 1000
 
     def test_multiple_executions(self, lret_adapter: LRETBackendAdapter, sample_circuit: dict) -> None:
         """Test multiple sequential executions."""

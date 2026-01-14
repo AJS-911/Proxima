@@ -63,15 +63,15 @@ def mock_cuquantum_adapter(mock_cuda_environment):
 @pytest.fixture
 def mock_gpu_info():
     """Mock GPU device information."""
-    return MagicMock(
-        device_id=0,
-        name='NVIDIA GeForce RTX 4090',
-        total_memory_mb=24576,
-        free_memory_mb=20000,
-        compute_capability=(8, 9),
-        cuda_cores=16384,
-        memory_bandwidth_gbps=1008,
-    )
+    gpu_mock = MagicMock()
+    gpu_mock.device_id = 0
+    gpu_mock.name = 'NVIDIA GeForce RTX 4090'
+    gpu_mock.total_memory_mb = 24576
+    gpu_mock.free_memory_mb = 20000
+    gpu_mock.compute_capability = (8, 9)
+    gpu_mock.cuda_cores = 16384
+    gpu_mock.memory_bandwidth_gbps = 1008
+    return gpu_mock
 
 
 @pytest.fixture

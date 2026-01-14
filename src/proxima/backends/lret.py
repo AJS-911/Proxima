@@ -177,10 +177,23 @@ class LRETResultNormalizer:
             return "raw"
         
         # Check for result object attributes
-        if hasattr(result, "counts") or hasattr(result, "get_counts"):
-            return "counts"
-        if hasattr(result, "statevector") or hasattr(result, "state_vector"):
+        # Check statevector first, as some results have both attributes
+        # but only one is populated (e.g., MockLRETResult has counts={} even for statevector results)
+        if hasattr(result, "statevector") and result.statevector is not None:
             return "statevector"
+        if hasattr(result, "state_vector") and result.state_vector is not None:
+            return "statevector"
+        # Check counts - ensure it's actually populated
+        counts_val = getattr(result, "counts", None)
+        if counts_val is not None and counts_val:  # Non-empty counts
+            return "counts"
+        if hasattr(result, "get_counts"):
+            try:
+                counts = result.get_counts()
+                if counts:
+                    return "counts"
+            except Exception:
+                pass
         if hasattr(result, "density_matrix"):
             return "density_matrix"
         if hasattr(result, "probabilities"):
@@ -772,7 +785,8 @@ class LRETBackendAdapter(BaseBackendAdapter):
 
     def estimate_resources(self, circuit: Any) -> ResourceEstimate:
         """Estimate resources needed for circuit execution."""
-        if not self.is_available():
+        # Allow estimation even when LRET is not installed if using mock mode
+        if not self.is_available() and not self._use_mock:
             return ResourceEstimate(
                 memory_mb=None,
                 time_ms=None,
@@ -852,7 +866,6 @@ class LRETBackendAdapter(BaseBackendAdapter):
 
         return None
 
-    @wrap_backend_exception("lret")
     def execute(
         self,
         circuit: Any,
@@ -899,19 +912,31 @@ class LRETBackendAdapter(BaseBackendAdapter):
             execution_time_ms=execution_time_ms,
         )
 
-        # Build ExecutionResult
+        # Build ExecutionResult with proper signature
+        data = {}
+        if normalized.counts:
+            data["counts"] = normalized.counts
+        if normalized.statevector is not None:
+            data["statevector"] = normalized.statevector
+        if normalized.probabilities:
+            data["probabilities"] = normalized.probabilities
+        
+        result_type = ResultType.COUNTS if normalized.counts else ResultType.STATEVECTOR
+        
         return ExecutionResult(
-            result_type=ResultType.COUNTS if normalized.counts else ResultType.STATE_VECTOR,
-            counts=normalized.counts or None,
-            statevector=normalized.statevector,
+            backend="lret",
+            simulator_type=SimulatorType.CUSTOM,
+            execution_time_ms=execution_time_ms,
+            qubit_count=num_qubits,
+            shot_count=shots if shots > 0 else None,
+            result_type=result_type,
+            data=data,
             metadata={
-                "backend": "lret",
-                "shots": shots,
-                "execution_time_ms": execution_time_ms,
                 "normalized": True,
                 "format": normalized.format.value,
                 **normalized.metadata,
             },
+            raw_result=result,
         )
 
     def _execute_real_lret(
@@ -1241,10 +1266,10 @@ class MockLRETSimulator:
                 result[i] += sqrt2_inv * sv[i]
                 result[partner] += sqrt2_inv * sv[i]
             else:
-                result[i] += sqrt2_inv * sv[partner]
-                result[partner] -= sqrt2_inv * sv[partner]
+                result[i] -= sqrt2_inv * sv[i]
+                result[partner] += sqrt2_inv * sv[i]
 
-        return result / 2 + sv / 2  # Simplified approximation
+        return result
 
     def _apply_x(self, sv: np.ndarray, qubit: int, n: int) -> np.ndarray:
         """Apply X (NOT) gate to statevector."""
