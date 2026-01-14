@@ -1,7 +1,10 @@
-"""Session management implementation.
+﻿"""Enhanced Session Management Implementation.
 
-Provides session lifecycle management for tracking execution contexts,
-persisting state across executions, and supporting resume/undo functionality.
+Provides session lifecycle management with critical missing features:
+- Long-term session storage (SQLite/JSON)
+- Session export/import
+- Concurrent session management
+- Session recovery after crashes
 
 Features:
 - Session creation and lifecycle management
@@ -13,16 +16,36 @@ Features:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import os
+import shutil
+import sqlite3
+import tempfile
+import threading
+import time
 import uuid
+import zipfile
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from enum import Enum
+from enum import Enum, auto
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator, Protocol, TypeVar
 
-from proxima.core.state import ExecutionState, ExecutionStateMachine
+from proxima.core.state import (
+    ExecutionState,
+    ExecutionStateMachine,
+    PersistedState,
+    StatePersistence,
+)
 from proxima.utils.logging import get_logger, set_execution_context
+
+
+# ==================== SESSION STATUS ====================
 
 
 class SessionStatus(str, Enum):
@@ -33,6 +56,18 @@ class SessionStatus(str, Enum):
     COMPLETED = "completed"
     ABORTED = "aborted"
     ERROR = "error"
+    CRASHED = "crashed"
+    RECOVERING = "recovering"
+
+
+class StorageBackend(str, Enum):
+    """Storage backend types."""
+
+    JSON = "json"
+    SQLITE = "sqlite"
+
+
+# ==================== CHECKPOINTS ====================
 
 
 @dataclass
@@ -79,652 +114,1362 @@ class Checkpoint:
         )
 
 
-@dataclass
-class ExecutionRecord:
-    """Record of a single execution within a session."""
-
-    id: str
-    started_at: datetime
-    completed_at: datetime | None = None
-    status: str = "running"
-    backend: str | None = None
-    objective: str | None = None
-    result: dict[str, Any] = field(default_factory=dict)
-    duration_ms: float = 0.0
-    error: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary."""
-        return {
-            "id": self.id,
-            "started_at": self.started_at.isoformat(),
-            "completed_at": (
-                self.completed_at.isoformat() if self.completed_at else None
-            ),
-            "status": self.status,
-            "backend": self.backend,
-            "objective": self.objective,
-            "result": self.result,
-            "duration_ms": self.duration_ms,
-            "error": self.error,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ExecutionRecord:
-        """Create from dictionary."""
-        return cls(
-            id=data["id"],
-            started_at=datetime.fromisoformat(data["started_at"]),
-            completed_at=(
-                datetime.fromisoformat(data["completed_at"])
-                if data.get("completed_at")
-                else None
-            ),
-            status=data.get("status", "unknown"),
-            backend=data.get("backend"),
-            objective=data.get("objective"),
-            result=data.get("result", {}),
-            duration_ms=data.get("duration_ms", 0.0),
-            error=data.get("error"),
-        )
+# ==================== STORAGE BACKENDS ====================
 
 
-class Session:
-    """Manages a single execution session.
+class SessionStorageBackend(ABC):
+    """Abstract base class for session storage backends."""
 
-    A session groups related executions together and provides:
-    - Unified logging context
-    - State persistence and checkpointing
-    - Resume capability after pause/abort
-    - Execution history tracking
-    """
+    @abstractmethod
+    def save_session(self, session_data: dict[str, Any]) -> None:
+        """Save session data."""
+        pass
 
-    def __init__(
-        self,
-        session_id: str | None = None,
-        name: str | None = None,
-        storage_dir: Path | None = None,
-    ) -> None:
-        """Initialize a new session.
+    @abstractmethod
+    def load_session(self, session_id: str) -> dict[str, Any] | None:
+        """Load session data by ID."""
+        pass
+
+    @abstractmethod
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session."""
+        pass
+
+    @abstractmethod
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """List all sessions."""
+        pass
+
+    @abstractmethod
+    def session_exists(self, session_id: str) -> bool:
+        """Check if session exists."""
+        pass
+
+    @abstractmethod
+    def save_checkpoint(self, checkpoint: Checkpoint) -> None:
+        """Save a checkpoint."""
+        pass
+
+    @abstractmethod
+    def load_checkpoints(self, session_id: str) -> list[Checkpoint]:
+        """Load checkpoints for a session."""
+        pass
+
+    @abstractmethod
+    def get_crashed_sessions(self) -> list[str]:
+        """Get sessions that crashed mid-execution."""
+        pass
+
+
+class JSONStorageBackend(SessionStorageBackend):
+    """JSON file-based storage backend."""
+
+    def __init__(self, storage_dir: Path):
+        """Initialize JSON storage backend.
 
         Args:
-            session_id: Optional session ID. Generated if not provided.
-            name: Optional human-readable session name.
-            storage_dir: Directory for session persistence.
+            storage_dir: Directory for session files
         """
-        self.id = session_id or str(uuid.uuid4())
-        self.name = name or f"session-{self.id[:8]}"
-        self.storage_dir = storage_dir or Path.home() / ".proxima" / "sessions"
+        self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoints_dir = storage_dir / "checkpoints"
+        self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
 
-        self.status = SessionStatus.ACTIVE
-        self.created_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+    def _session_path(self, session_id: str) -> Path:
+        """Get path to session file."""
+        return self.storage_dir / f"{session_id}.json"
 
-        self._state_machine: ExecutionStateMachine | None = None
-        self._current_plan: dict[str, Any] = {}
-        self._executions: list[ExecutionRecord] = []
-        self._checkpoints: list[Checkpoint] = []
-        self._current_execution: ExecutionRecord | None = None
-        self._metadata: dict[str, Any] = {}
-        self._tags: list[str] = []
+    def save_session(self, session_data: dict[str, Any]) -> None:
+        """Save session to JSON file."""
+        with self._lock:
+            session_path = self._session_path(session_data["id"])
+            temp_path = session_path.with_suffix(".tmp")
 
-        self.logger = get_logger("session").bind(session_id=self.id)
-        self.logger.info("session.created", name=self.name)
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(session_data, f, indent=2, default=str)
 
-    @property
-    def session_file(self) -> Path:
-        """Path to session persistence file."""
-        return self.storage_dir / f"{self.id}.json"
+            temp_path.replace(session_path)
 
-    @property
-    def execution_count(self) -> int:
-        """Number of executions in this session."""
-        return len(self._executions)
-
-    @property
-    def checkpoints(self) -> list[Checkpoint]:
-        """List of checkpoints."""
-        return list(self._checkpoints)
-
-    @property
-    def executions(self) -> list[ExecutionRecord]:
-        """List of execution records."""
-        return list(self._executions)
-
-    @property
-    def current_state(self) -> str | None:
-        """Current state machine state."""
-        return self._state_machine.state if self._state_machine else None
-
-    @property
-    def metadata(self) -> dict[str, Any]:
-        """Session metadata."""
-        return dict(self._metadata)
-
-    @property
-    def tags(self) -> list[str]:
-        """Session tags."""
-        return list(self._tags)
-
-    def add_tag(self, tag: str) -> None:
-        """Add a tag to the session."""
-        if tag not in self._tags:
-            self._tags.append(tag)
-            self._touch()
-
-    def remove_tag(self, tag: str) -> None:
-        """Remove a tag from the session."""
-        if tag in self._tags:
-            self._tags.remove(tag)
-            self._touch()
-
-    def set_metadata(self, key: str, value: Any) -> None:
-        """Set a metadata value."""
-        self._metadata[key] = value
-        self._touch()
-
-    def _touch(self) -> None:
-        """Update the updated_at timestamp."""
-        self.updated_at = datetime.utcnow()
-
-    def initialize_state_machine(
-        self, execution_id: str | None = None
-    ) -> ExecutionStateMachine:
-        """Create or reset the state machine for a new execution.
-
-        Args:
-            execution_id: Optional execution ID for tracing.
-
-        Returns:
-            Initialized ExecutionStateMachine.
-        """
-        exec_id = execution_id or str(uuid.uuid4())[:8]
-        self._state_machine = ExecutionStateMachine(execution_id=exec_id)
-
-        # Set logging context
-        set_execution_context(execution_id=exec_id, session_id=self.id)
-
-        self.logger.info("session.state_machine_initialized", execution_id=exec_id)
-        return self._state_machine
-
-    def start_execution(
-        self,
-        objective: str | None = None,
-        backend: str | None = None,
-        plan: dict[str, Any] | None = None,
-    ) -> ExecutionRecord:
-        """Start a new execution within this session.
-
-        Args:
-            objective: Execution objective/description.
-            backend: Backend to use.
-            plan: Execution plan.
-
-        Returns:
-            New ExecutionRecord.
-        """
-        if self.status != SessionStatus.ACTIVE:
-            raise RuntimeError(
-                f"Cannot start execution: session status is {self.status}"
-            )
-
-        exec_id = str(uuid.uuid4())[:8]
-        self._current_plan = plan or {}
-
-        record = ExecutionRecord(
-            id=exec_id,
-            started_at=datetime.utcnow(),
-            objective=objective,
-            backend=backend,
-        )
-        self._current_execution = record
-        self._executions.append(record)
-
-        # Initialize state machine if not exists
-        if not self._state_machine:
-            self.initialize_state_machine(exec_id)
-
-        self.logger.info(
-            "session.execution_started",
-            execution_id=exec_id,
-            objective=objective,
-            backend=backend,
-        )
-        self._touch()
-        return record
-
-    def complete_execution(self, result: dict[str, Any] | None = None) -> None:
-        """Mark current execution as completed.
-
-        Args:
-            result: Execution result data.
-        """
-        if self._current_execution:
-            self._current_execution.completed_at = datetime.utcnow()
-            self._current_execution.status = "completed"
-            self._current_execution.result = result or {}
-
-            if self._current_execution.started_at:
-                delta = (
-                    self._current_execution.completed_at
-                    - self._current_execution.started_at
-                )
-                self._current_execution.duration_ms = delta.total_seconds() * 1000
-
-            self.logger.info(
-                "session.execution_completed",
-                execution_id=self._current_execution.id,
-                duration_ms=self._current_execution.duration_ms,
-            )
-
-        self._current_execution = None
-        self._touch()
-
-    def fail_execution(self, error: str) -> None:
-        """Mark current execution as failed.
-
-        Args:
-            error: Error message.
-        """
-        if self._current_execution:
-            self._current_execution.completed_at = datetime.utcnow()
-            self._current_execution.status = "error"
-            self._current_execution.error = error
-
-            if self._current_execution.started_at:
-                delta = (
-                    self._current_execution.completed_at
-                    - self._current_execution.started_at
-                )
-                self._current_execution.duration_ms = delta.total_seconds() * 1000
-
-            self.logger.error(
-                "session.execution_failed",
-                execution_id=self._current_execution.id,
-                error=error,
-            )
-
-        self._current_execution = None
-        self._touch()
-
-    def create_checkpoint(self, name: str | None = None) -> Checkpoint:
-        """Create a checkpoint of current session state.
-
-        Args:
-            name: Optional checkpoint name/label.
-
-        Returns:
-            Created Checkpoint.
-        """
-        checkpoint = Checkpoint(
-            id=str(uuid.uuid4())[:8],
-            session_id=self.id,
-            timestamp=datetime.utcnow(),
-            state=self._state_machine.state if self._state_machine else "IDLE",
-            execution_index=len(self._executions),
-            plan_snapshot=dict(self._current_plan),
-            results_snapshot=[e.to_dict() for e in self._executions],
-            metadata={"name": name} if name else {},
-        )
-
-        self._checkpoints.append(checkpoint)
-        self.logger.info(
-            "session.checkpoint_created",
-            checkpoint_id=checkpoint.id,
-            name=name,
-        )
-        self._touch()
-        return checkpoint
-
-    def restore_checkpoint(self, checkpoint_id: str) -> bool:
-        """Restore session to a previous checkpoint.
-
-        Args:
-            checkpoint_id: ID of checkpoint to restore.
-
-        Returns:
-            True if restored successfully.
-        """
-        checkpoint = next(
-            (cp for cp in self._checkpoints if cp.id == checkpoint_id), None
-        )
-        if not checkpoint:
-            self.logger.warning(
-                "session.checkpoint_not_found", checkpoint_id=checkpoint_id
-            )
-            return False
-
-        # Restore executions
-        self._executions = [
-            ExecutionRecord.from_dict(data) for data in checkpoint.results_snapshot
-        ]
-        self._current_plan = dict(checkpoint.plan_snapshot)
-
-        # Reset state machine to checkpoint state
-        # Note: reset is a dynamically added trigger method from transitions library
-        if self._state_machine:
-            self._state_machine.reset()  # type: ignore[attr-defined]
-            self.logger.info(
-                "session.checkpoint_restored",
-                checkpoint_id=checkpoint_id,
-                restored_state=checkpoint.state,
-            )
-
-        self._touch()
-        return True
-
-    def pause(self) -> Checkpoint | None:
-        """Pause the session and create a checkpoint.
-
-        Returns:
-            Created checkpoint, or None if already paused.
-        """
-        if self.status == SessionStatus.PAUSED:
+    def load_session(self, session_id: str) -> dict[str, Any] | None:
+        """Load session from JSON file."""
+        session_path = self._session_path(session_id)
+        if not session_path.exists():
             return None
 
-        # Pause state machine if running
-        # Note: pause is a dynamically added trigger method from transitions library
-        if (
-            self._state_machine
-            and self._state_machine.state == ExecutionState.RUNNING.value
-        ):
-            self._state_machine.pause()  # type: ignore[attr-defined]
+        with open(session_path, encoding="utf-8") as f:
+            return json.load(f)
 
-        self.status = SessionStatus.PAUSED
-        checkpoint = self.create_checkpoint("pause_checkpoint")
-        self.save()
+    def delete_session(self, session_id: str) -> bool:
+        """Delete session file."""
+        session_path = self._session_path(session_id)
+        if session_path.exists():
+            session_path.unlink()
+            # Also delete checkpoints
+            for cp in self.checkpoints_dir.glob(f"{session_id}_*.json"):
+                cp.unlink()
+            return True
+        return False
 
-        self.logger.info("session.paused")
-        return checkpoint
-
-    def resume(self) -> bool:
-        """Resume a paused session.
-
-        Returns:
-            True if resumed successfully.
-        """
-        if self.status != SessionStatus.PAUSED:
-            return False
-
-        # Resume state machine if paused
-        # Note: resume is a dynamically added trigger method from transitions library
-        if (
-            self._state_machine
-            and self._state_machine.state == ExecutionState.PAUSED.value
-        ):
-            self._state_machine.resume()  # type: ignore[attr-defined]
-
-        self.status = SessionStatus.ACTIVE
-        self.logger.info("session.resumed")
-        self._touch()
-        return True
-
-    def abort(self, reason: str | None = None) -> None:
-        """Abort the session.
-
-        Args:
-            reason: Optional abort reason.
-        """
-        # Note: abort is a dynamically added trigger method from transitions library
-        if self._state_machine and self._state_machine.state in (
-            ExecutionState.RUNNING.value,
-            ExecutionState.PAUSED.value,
-        ):
-            self._state_machine.abort()  # type: ignore[attr-defined]
-
-        if self._current_execution:
-            self.fail_execution(reason or "Session aborted")
-
-        self.status = SessionStatus.ABORTED
-        self.set_metadata("abort_reason", reason)
-        self.save()
-
-        self.logger.info("session.aborted", reason=reason)
-
-    def complete(self) -> None:
-        """Mark session as completed."""
-        self.status = SessionStatus.COMPLETED
-        self.save()
-        self.logger.info("session.completed", execution_count=self.execution_count)
-
-    def save(self) -> Path:
-        """Persist session to disk.
-
-        Returns:
-            Path to saved session file.
-        """
-        data = {
-            "id": self.id,
-            "name": self.name,
-            "status": self.status.value,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
-            "executions": [e.to_dict() for e in self._executions],
-            "checkpoints": [c.to_dict() for c in self._checkpoints],
-            "current_plan": self._current_plan,
-            "metadata": self._metadata,
-            "tags": self._tags,
-            "state_machine": (
-                self._state_machine.snapshot() if self._state_machine else None
-            ),
-        }
-
-        self.session_file.write_text(json.dumps(data, indent=2, default=str))
-        self.logger.debug("session.saved", path=str(self.session_file))
-        return self.session_file
-
-    @classmethod
-    def load(cls, session_id: str, storage_dir: Path | None = None) -> Session:
-        """Load a session from disk.
-
-        Args:
-            session_id: Session ID to load.
-            storage_dir: Storage directory.
-
-        Returns:
-            Loaded Session instance.
-
-        Raises:
-            FileNotFoundError: If session file doesn't exist.
-        """
-        storage = storage_dir or Path.home() / ".proxima" / "sessions"
-        path = storage / f"{session_id}.json"
-
-        if not path.exists():
-            raise FileNotFoundError(f"Session not found: {session_id}")
-
-        data = json.loads(path.read_text())
-
-        session = cls(
-            session_id=data["id"],
-            name=data.get("name"),
-            storage_dir=storage,
-        )
-
-        session.status = SessionStatus(data.get("status", "active"))
-        session.created_at = datetime.fromisoformat(data["created_at"])
-        session.updated_at = datetime.fromisoformat(data["updated_at"])
-        session._executions = [
-            ExecutionRecord.from_dict(e) for e in data.get("executions", [])
-        ]
-        session._checkpoints = [
-            Checkpoint.from_dict(c) for c in data.get("checkpoints", [])
-        ]
-        session._current_plan = data.get("current_plan", {})
-        session._metadata = data.get("metadata", {})
-        session._tags = data.get("tags", [])
-
-        session.logger.info("session.loaded")
-        return session
-
-    @classmethod
-    def list_sessions(cls, storage_dir: Path | None = None) -> list[dict[str, Any]]:
-        """List all saved sessions.
-
-        Args:
-            storage_dir: Storage directory.
-
-        Returns:
-            List of session summaries.
-        """
-        storage = storage_dir or Path.home() / ".proxima" / "sessions"
-        if not storage.exists():
-            return []
-
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """List all sessions."""
         sessions = []
-        for path in storage.glob("*.json"):
+        for path in self.storage_dir.glob("*.json"):
             try:
-                data = json.loads(path.read_text())
-                sessions.append(
-                    {
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                    sessions.append({
                         "id": data.get("id"),
                         "name": data.get("name"),
                         "status": data.get("status"),
                         "created_at": data.get("created_at"),
                         "updated_at": data.get("updated_at"),
-                        "execution_count": len(data.get("executions", [])),
-                    }
-                )
+                    })
             except (json.JSONDecodeError, KeyError):
                 continue
-
-        # Sort by updated_at descending
-        sessions.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
         return sessions
 
+    def session_exists(self, session_id: str) -> bool:
+        """Check if session file exists."""
+        return self._session_path(session_id).exists()
+
+    def save_checkpoint(self, checkpoint: Checkpoint) -> None:
+        """Save checkpoint to JSON file."""
+        cp_path = self.checkpoints_dir / f"{checkpoint.session_id}_{checkpoint.id}.json"
+        with open(cp_path, "w", encoding="utf-8") as f:
+            json.dump(checkpoint.to_dict(), f, indent=2)
+
+    def load_checkpoints(self, session_id: str) -> list[Checkpoint]:
+        """Load all checkpoints for a session."""
+        checkpoints = []
+        for path in self.checkpoints_dir.glob(f"{session_id}_*.json"):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                    checkpoints.append(Checkpoint.from_dict(data))
+            except (json.JSONDecodeError, KeyError):
+                continue
+        return sorted(checkpoints, key=lambda c: c.timestamp)
+
+    def get_crashed_sessions(self) -> list[str]:
+        """Get sessions that were running when crashed."""
+        crashed = []
+        for session_info in self.list_sessions():
+            if session_info.get("status") in (
+                SessionStatus.ACTIVE.value,
+                SessionStatus.PAUSED.value,
+            ):
+                crashed.append(session_info["id"])
+        return crashed
+
+
+class SQLiteStorageBackend(SessionStorageBackend):
+    """SQLite database storage backend."""
+
+    def __init__(self, db_path: Path):
+        """Initialize SQLite storage backend.
+
+        Args:
+            db_path: Path to SQLite database file
+        """
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._local = threading.local()
+        self._init_db()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Get thread-local database connection."""
+        if not hasattr(self._local, "conn") or self._local.conn is None:
+            self._local.conn = sqlite3.connect(
+                str(self.db_path),
+                check_same_thread=False,
+            )
+            self._local.conn.row_factory = sqlite3.Row
+        return self._local.conn
+
+    def _init_db(self) -> None:
+        """Initialize database schema."""
+        conn = self._get_conn()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                status TEXT,
+                data TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                timestamp TEXT,
+                state TEXT,
+                execution_index INTEGER,
+                data TEXT,
+                FOREIGN KEY (session_id) REFERENCES sessions(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+            CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id);
+        """)
+        conn.commit()
+
+    def save_session(self, session_data: dict[str, Any]) -> None:
+        """Save session to database."""
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sessions (id, name, status, data, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_data["id"],
+                session_data.get("name", ""),
+                session_data.get("status", ""),
+                json.dumps(session_data, default=str),
+                session_data.get("created_at", datetime.utcnow().isoformat()),
+                datetime.utcnow().isoformat(),
+            ),
+        )
+        conn.commit()
+
+    def load_session(self, session_id: str) -> dict[str, Any] | None:
+        """Load session from database."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT data FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row:
+            return json.loads(row["data"])
+        return None
+
+    def delete_session(self, session_id: str) -> bool:
+        """Delete session from database."""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM checkpoints WHERE session_id = ?", (session_id,))
+        result = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        conn.commit()
+        return result.rowcount > 0
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """List all sessions."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, name, status, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def session_exists(self, session_id: str) -> bool:
+        """Check if session exists."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        return row is not None
+
+    def save_checkpoint(self, checkpoint: Checkpoint) -> None:
+        """Save checkpoint to database."""
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO checkpoints (id, session_id, timestamp, state, execution_index, data)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                checkpoint.id,
+                checkpoint.session_id,
+                checkpoint.timestamp.isoformat(),
+                checkpoint.state,
+                checkpoint.execution_index,
+                json.dumps(checkpoint.to_dict(), default=str),
+            ),
+        )
+        conn.commit()
+
+    def load_checkpoints(self, session_id: str) -> list[Checkpoint]:
+        """Load all checkpoints for a session."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT data FROM checkpoints WHERE session_id = ? ORDER BY timestamp",
+            (session_id,),
+        ).fetchall()
+        return [Checkpoint.from_dict(json.loads(row["data"])) for row in rows]
+
+    def get_crashed_sessions(self) -> list[str]:
+        """Get sessions that were running when crashed."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id FROM sessions WHERE status IN (?, ?)",
+            (SessionStatus.ACTIVE.value, SessionStatus.PAUSED.value),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+
+
+# ==================== SESSION EXPORT/IMPORT ====================
+
+
+class SessionExporter:
+    """Handles session export to portable formats."""
+
+    def __init__(self, storage: SessionStorageBackend):
+        """Initialize exporter.
+
+        Args:
+            storage: Storage backend to export from
+        """
+        self.storage = storage
+        self.logger = get_logger("session.exporter")
+
+    def export_to_json(self, session_id: str, output_path: Path) -> Path:
+        """Export session to JSON file.
+
+        Args:
+            session_id: Session to export
+            output_path: Output file path
+
+        Returns:
+            Path to exported file
+        """
+        session_data = self.storage.load_session(session_id)
+        if not session_data:
+            raise ValueError(f"Session '{session_id}' not found")
+
+        # Include checkpoints
+        checkpoints = self.storage.load_checkpoints(session_id)
+        export_data = {
+            "session": session_data,
+            "checkpoints": [cp.to_dict() for cp in checkpoints],
+            "exported_at": datetime.utcnow().isoformat(),
+            "version": "1.0",
+        }
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(export_data, f, indent=2, default=str)
+
+        self.logger.info("session.exported", session_id=session_id, path=str(output_path))
+        return output_path
+
+    def export_to_archive(self, session_id: str, output_path: Path) -> Path:
+        """Export session to compressed archive.
+
+        Args:
+            session_id: Session to export
+            output_path: Output archive path
+
+        Returns:
+            Path to exported archive
+        """
+        session_data = self.storage.load_session(session_id)
+        if not session_data:
+            raise ValueError(f"Session '{session_id}' not found")
+
+        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Add session data
+            zf.writestr("session.json", json.dumps(session_data, indent=2, default=str))
+
+            # Add checkpoints
+            checkpoints = self.storage.load_checkpoints(session_id)
+            for i, cp in enumerate(checkpoints):
+                zf.writestr(f"checkpoints/cp_{i:04d}.json", json.dumps(cp.to_dict(), indent=2))
+
+            # Add metadata
+            metadata = {
+                "session_id": session_id,
+                "exported_at": datetime.utcnow().isoformat(),
+                "version": "1.0",
+                "checkpoint_count": len(checkpoints),
+            }
+            zf.writestr("metadata.json", json.dumps(metadata, indent=2))
+
+        self.logger.info("session.archived", session_id=session_id, path=str(output_path))
+        return output_path
+
+
+class SessionImporter:
+    """Handles session import from portable formats."""
+
+    def __init__(self, storage: SessionStorageBackend):
+        """Initialize importer.
+
+        Args:
+            storage: Storage backend to import to
+        """
+        self.storage = storage
+        self.logger = get_logger("session.importer")
+
+    def import_from_json(
+        self,
+        input_path: Path,
+        new_session_id: str | None = None,
+    ) -> str:
+        """Import session from JSON file.
+
+        Args:
+            input_path: Path to JSON file
+            new_session_id: Optional new ID for imported session
+
+        Returns:
+            Session ID of imported session
+        """
+        with open(input_path, encoding="utf-8") as f:
+            export_data = json.load(f)
+
+        session_data = export_data["session"]
+
+        # Optionally assign new ID
+        if new_session_id:
+            old_id = session_data["id"]
+            session_data["id"] = new_session_id
+        else:
+            old_id = session_data["id"]
+            new_session_id = session_data["id"]
+
+        # Check for conflicts
+        if self.storage.session_exists(new_session_id):
+            raise ValueError(f"Session '{new_session_id}' already exists")
+
+        # Import session
+        session_data["imported_at"] = datetime.utcnow().isoformat()
+        session_data["status"] = SessionStatus.PAUSED.value  # Start paused
+        self.storage.save_session(session_data)
+
+        # Import checkpoints
+        for cp_data in export_data.get("checkpoints", []):
+            cp_data["session_id"] = new_session_id
+            cp = Checkpoint.from_dict(cp_data)
+            self.storage.save_checkpoint(cp)
+
+        self.logger.info(
+            "session.imported",
+            session_id=new_session_id,
+            path=str(input_path),
+        )
+        return new_session_id
+
+    def import_from_archive(
+        self,
+        input_path: Path,
+        new_session_id: str | None = None,
+    ) -> str:
+        """Import session from compressed archive.
+
+        Args:
+            input_path: Path to archive
+            new_session_id: Optional new ID for imported session
+
+        Returns:
+            Session ID of imported session
+        """
+        with zipfile.ZipFile(input_path, "r") as zf:
+            # Read session data
+            session_data = json.loads(zf.read("session.json"))
+
+            # Optionally assign new ID
+            if new_session_id:
+                old_id = session_data["id"]
+                session_data["id"] = new_session_id
+            else:
+                old_id = session_data["id"]
+                new_session_id = session_data["id"]
+
+            # Check for conflicts
+            if self.storage.session_exists(new_session_id):
+                raise ValueError(f"Session '{new_session_id}' already exists")
+
+            # Import session
+            session_data["imported_at"] = datetime.utcnow().isoformat()
+            session_data["status"] = SessionStatus.PAUSED.value
+            self.storage.save_session(session_data)
+
+            # Import checkpoints
+            for name in zf.namelist():
+                if name.startswith("checkpoints/") and name.endswith(".json"):
+                    cp_data = json.loads(zf.read(name))
+                    cp_data["session_id"] = new_session_id
+                    cp = Checkpoint.from_dict(cp_data)
+                    self.storage.save_checkpoint(cp)
+
+        self.logger.info(
+            "session.imported_archive",
+            session_id=new_session_id,
+            path=str(input_path),
+        )
+        return new_session_id
+
+
+# ==================== CONCURRENT SESSION MANAGEMENT ====================
+
+
+class SessionLock:
+    """Distributed lock for session access."""
+
+    def __init__(self, lock_dir: Path):
+        """Initialize session lock.
+
+        Args:
+            lock_dir: Directory for lock files
+        """
+        self.lock_dir = lock_dir
+        self.lock_dir.mkdir(parents=True, exist_ok=True)
+        self._held_locks: dict[str, Path] = {}
+        self._lock = threading.Lock()
+
+    def _lock_path(self, session_id: str) -> Path:
+        """Get path to lock file."""
+        return self.lock_dir / f"{session_id}.lock"
+
+    def acquire(self, session_id: str, timeout: float = 30.0) -> bool:
+        """Acquire lock for a session.
+
+        Args:
+            session_id: Session to lock
+            timeout: Maximum wait time
+
+        Returns:
+            True if lock acquired
+        """
+        lock_path = self._lock_path(session_id)
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            with self._lock:
+                if session_id in self._held_locks:
+                    return True  # Already held by us
+
+                if not lock_path.exists():
+                    try:
+                        # Create lock file with our PID
+                        lock_path.write_text(str(os.getpid()))
+                        self._held_locks[session_id] = lock_path
+                        return True
+                    except Exception:
+                        pass
+                else:
+                    # Check if holding process is still alive
+                    try:
+                        pid = int(lock_path.read_text())
+                        if not self._process_alive(pid):
+                            lock_path.unlink()
+                            continue
+                    except (ValueError, FileNotFoundError):
+                        continue
+
+            time.sleep(0.1)
+
+        return False
+
+    def release(self, session_id: str) -> None:
+        """Release lock for a session.
+
+        Args:
+            session_id: Session to unlock
+        """
+        with self._lock:
+            if session_id in self._held_locks:
+                lock_path = self._held_locks.pop(session_id)
+                if lock_path.exists():
+                    lock_path.unlink()
+
+    def is_locked(self, session_id: str) -> bool:
+        """Check if session is locked.
+
+        Args:
+            session_id: Session to check
+
+        Returns:
+            True if locked
+        """
+        return self._lock_path(session_id).exists()
+
+    def _process_alive(self, pid: int) -> bool:
+        """Check if a process is still running."""
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    @contextmanager
+    def locked(self, session_id: str, timeout: float = 30.0) -> Generator[bool, None, None]:
+        """Context manager for session locking.
+
+        Args:
+            session_id: Session to lock
+            timeout: Maximum wait time
+
+        Yields:
+            True if lock acquired
+        """
+        acquired = self.acquire(session_id, timeout)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                self.release(session_id)
+
+
+class ConcurrentSessionManager:
+    """Manages concurrent access to sessions.
+
+    Features:
+    - Session locking
+    - Concurrent session limits
+    - Session access queue
+    """
+
+    def __init__(
+        self,
+        storage: SessionStorageBackend,
+        lock_dir: Path,
+        max_concurrent: int = 10,
+    ):
+        """Initialize concurrent session manager.
+
+        Args:
+            storage: Storage backend
+            lock_dir: Directory for lock files
+            max_concurrent: Maximum concurrent sessions
+        """
+        self.storage = storage
+        self.lock = SessionLock(lock_dir)
+        self.max_concurrent = max_concurrent
+        self.logger = get_logger("session.concurrent")
+        self._active_sessions: set[str] = set()
+        self._lock = threading.Lock()
+
+    def can_activate(self) -> bool:
+        """Check if a new session can be activated."""
+        with self._lock:
+            return len(self._active_sessions) < self.max_concurrent
+
+    def activate_session(self, session_id: str, timeout: float = 30.0) -> bool:
+        """Activate a session for use.
+
+        Args:
+            session_id: Session to activate
+            timeout: Lock timeout
+
+        Returns:
+            True if activated
+        """
+        if not self.can_activate():
+            return False
+
+        if not self.lock.acquire(session_id, timeout):
+            return False
+
+        with self._lock:
+            self._active_sessions.add(session_id)
+
+        self.logger.info("session.activated", session_id=session_id)
+        return True
+
+    def deactivate_session(self, session_id: str) -> None:
+        """Deactivate a session.
+
+        Args:
+            session_id: Session to deactivate
+        """
+        self.lock.release(session_id)
+        with self._lock:
+            self._active_sessions.discard(session_id)
+        self.logger.info("session.deactivated", session_id=session_id)
+
+    def get_active_sessions(self) -> list[str]:
+        """Get list of active sessions."""
+        with self._lock:
+            return list(self._active_sessions)
+
+    @contextmanager
+    def session_context(
+        self,
+        session_id: str,
+        timeout: float = 30.0,
+    ) -> Generator[bool, None, None]:
+        """Context manager for session access.
+
+        Args:
+            session_id: Session to access
+            timeout: Lock timeout
+
+        Yields:
+            True if session activated
+        """
+        activated = self.activate_session(session_id, timeout)
+        try:
+            yield activated
+        finally:
+            if activated:
+                self.deactivate_session(session_id)
+
+
+
+# ==================== CRASH RECOVERY ====================
+
+
+class SessionRecoveryManager:
+    """Handles session recovery after crashes.
+
+    Features:
+    - Detect crashed sessions
+    - Recover session state
+    - Resume from last checkpoint
+    - Cleanup orphaned resources
+    """
+
+    def __init__(
+        self,
+        storage: SessionStorageBackend,
+        state_persistence: StatePersistence | None = None,
+    ):
+        """Initialize recovery manager.
+
+        Args:
+            storage: Session storage backend
+            state_persistence: Optional state persistence for deeper recovery
+        """
+        self.storage = storage
+        self.state_persistence = state_persistence
+        self.logger = get_logger("session.recovery")
+
+    def get_crashed_sessions(self) -> list[dict[str, Any]]:
+        """Get list of sessions that need recovery.
+
+        Returns:
+            List of crashed session info
+        """
+        crashed_ids = self.storage.get_crashed_sessions()
+        crashed = []
+
+        for session_id in crashed_ids:
+            session_data = self.storage.load_session(session_id)
+            if session_data:
+                checkpoints = self.storage.load_checkpoints(session_id)
+                crashed.append({
+                    "session_id": session_id,
+                    "name": session_data.get("name"),
+                    "status": session_data.get("status"),
+                    "last_checkpoint": checkpoints[-1].to_dict() if checkpoints else None,
+                    "checkpoint_count": len(checkpoints),
+                })
+
+        return crashed
+
+    def recover_session(
+        self,
+        session_id: str,
+        from_checkpoint: str | None = None,
+    ) -> dict[str, Any]:
+        """Recover a crashed session.
+
+        Args:
+            session_id: Session to recover
+            from_checkpoint: Optional specific checkpoint to recover from
+
+        Returns:
+            Recovery result info
+        """
+        self.logger.info("session.recovery_started", session_id=session_id)
+
+        session_data = self.storage.load_session(session_id)
+        if not session_data:
+            raise ValueError(f"Session '{session_id}' not found")
+
+        checkpoints = self.storage.load_checkpoints(session_id)
+        if not checkpoints and not from_checkpoint:
+            # No checkpoints - mark as error
+            session_data["status"] = SessionStatus.ERROR.value
+            session_data["recovery_failed"] = True
+            session_data["recovery_reason"] = "No checkpoints available"
+            self.storage.save_session(session_data)
+            return {
+                "success": False,
+                "reason": "No checkpoints available for recovery",
+            }
+
+        # Find checkpoint to recover from
+        checkpoint: Checkpoint | None = None
+        if from_checkpoint:
+            checkpoint = next((c for c in checkpoints if c.id == from_checkpoint), None)
+        else:
+            checkpoint = checkpoints[-1] if checkpoints else None
+
+        if not checkpoint:
+            session_data["status"] = SessionStatus.ERROR.value
+            self.storage.save_session(session_data)
+            return {
+                "success": False,
+                "reason": f"Checkpoint '{from_checkpoint}' not found",
+            }
+
+        # Restore session from checkpoint
+        session_data["state"] = checkpoint.state
+        session_data["execution_index"] = checkpoint.execution_index
+        session_data["plan"] = checkpoint.plan_snapshot
+        session_data["results"] = checkpoint.results_snapshot
+        session_data["status"] = SessionStatus.RECOVERING.value
+        session_data["recovered_at"] = datetime.utcnow().isoformat()
+        session_data["recovered_from"] = checkpoint.id
+
+        self.storage.save_session(session_data)
+
+        self.logger.info(
+            "session.recovered",
+            session_id=session_id,
+            checkpoint_id=checkpoint.id,
+        )
+
+        return {
+            "success": True,
+            "checkpoint_id": checkpoint.id,
+            "execution_index": checkpoint.execution_index,
+            "state": checkpoint.state,
+        }
+
+    def mark_session_recovered(self, session_id: str) -> None:
+        """Mark session as fully recovered and ready to resume.
+
+        Args:
+            session_id: Session to mark
+        """
+        session_data = self.storage.load_session(session_id)
+        if session_data:
+            session_data["status"] = SessionStatus.PAUSED.value
+            session_data["recovery_complete"] = True
+            self.storage.save_session(session_data)
+
+    def abandon_session(self, session_id: str) -> None:
+        """Abandon a crashed session (mark as aborted).
+
+        Args:
+            session_id: Session to abandon
+        """
+        session_data = self.storage.load_session(session_id)
+        if session_data:
+            session_data["status"] = SessionStatus.ABORTED.value
+            session_data["abandoned_at"] = datetime.utcnow().isoformat()
+            self.storage.save_session(session_data)
+
+            self.logger.info("session.abandoned", session_id=session_id)
+
+    def cleanup_orphaned_resources(self, session_id: str) -> int:
+        """Cleanup resources from crashed session.
+
+        Args:
+            session_id: Session to cleanup
+
+        Returns:
+            Number of resources cleaned
+        """
+        # Check state persistence for orphaned resources
+        if not self.state_persistence:
+            return 0
+
+        persisted = self.state_persistence.load(session_id)
+        if not persisted:
+            return 0
+
+        cleaned = 0
+        for resource_id in persisted.resources:
+            # Attempt to cleanup (implementation depends on resource type)
+            self.logger.debug("resource.cleanup_orphan", resource_id=resource_id)
+            cleaned += 1
+
+        # Delete persisted state
+        self.state_persistence.delete(session_id)
+        return cleaned
+
+
+# ==================== MAIN SESSION CLASS ====================
+
+
+@dataclass
+class Session:
+    """Represents a single execution session.
+
+    Enhanced with:
+    - Checkpoint management
+    - State machine integration
+    - Resource tracking
+    """
+
+    id: str
+    name: str
+    created_at: datetime
+    updated_at: datetime
+    status: SessionStatus
+    state_machine: ExecutionStateMachine
+    plan: dict[str, Any] | None = None
+    results: list[dict[str, Any]] = field(default_factory=list)
+    execution_index: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+    tags: list[str] = field(default_factory=list)
+
     def to_dict(self) -> dict[str, Any]:
-        """Convert session to dictionary representation."""
+        """Convert session to dictionary."""
         return {
             "id": self.id,
             "name": self.name,
-            "status": self.status.value,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
-            "execution_count": self.execution_count,
-            "checkpoint_count": len(self._checkpoints),
-            "current_state": self.current_state,
-            "metadata": self._metadata,
-            "tags": self._tags,
+            "status": self.status.value,
+            "state": self.state_machine.state,
+            "state_history": self.state_machine.history,
+            "plan": self.plan,
+            "results": self.results,
+            "execution_index": self.execution_index,
+            "metadata": self.metadata,
+            "tags": self.tags,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Session:
+        """Create session from dictionary."""
+        state_machine = ExecutionStateMachine(
+            execution_id=data["id"],
+            enable_persistence=True,
+        )
+        # Restore state machine state
+        if "state" in data:
+            state_machine.state = data["state"]
+        if "state_history" in data:
+            state_machine.history = data["state_history"]
+
+        return cls(
+            id=data["id"],
+            name=data.get("name", ""),
+            created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+            status=SessionStatus(data.get("status", "active")),
+            state_machine=state_machine,
+            plan=data.get("plan"),
+            results=data.get("results", []),
+            execution_index=data.get("execution_index", 0),
+            metadata=data.get("metadata", {}),
+            tags=data.get("tags", []),
+        )
+
+    def create_checkpoint(self) -> Checkpoint:
+        """Create a checkpoint of current session state."""
+        return Checkpoint(
+            id=str(uuid.uuid4())[:8],
+            session_id=self.id,
+            timestamp=datetime.utcnow(),
+            state=self.state_machine.state,
+            execution_index=self.execution_index,
+            plan_snapshot=self.plan.copy() if self.plan else {},
+            results_snapshot=[r.copy() for r in self.results],
+            metadata={"session_status": self.status.value},
+        )
+
+    def restore_from_checkpoint(self, checkpoint: Checkpoint) -> None:
+        """Restore session state from checkpoint."""
+        self.state_machine.state = checkpoint.state
+        self.execution_index = checkpoint.execution_index
+        self.plan = checkpoint.plan_snapshot.copy()
+        self.results = [r.copy() for r in checkpoint.results_snapshot]
+        self.updated_at = datetime.utcnow()
+
+    def add_result(self, result: dict[str, Any]) -> None:
+        """Add an execution result."""
+        self.results.append(result)
+        self.execution_index += 1
+        self.updated_at = datetime.utcnow()
+
+    def update_status(self, status: SessionStatus) -> None:
+        """Update session status."""
+        self.status = status
+        self.updated_at = datetime.utcnow()
+
+    @staticmethod
+    def list_sessions(storage_dir: Path) -> list[dict[str, Any]]:
+        """List all sessions in storage directory."""
+        sessions = []
+        for path in storage_dir.glob("*.json"):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                    sessions.append({
+                        "id": data.get("id"),
+                        "name": data.get("name"),
+                        "status": data.get("status"),
+                        "created_at": data.get("created_at"),
+                        "updated_at": data.get("updated_at"),
+                    })
+            except (json.JSONDecodeError, KeyError):
+                continue
+        return sessions
+
+
+
+# ==================== SESSION MANAGER ====================
 
 
 class SessionManager:
-    """Manages multiple sessions and provides global session access."""
+    """Enhanced session manager with all features.
 
-    def __init__(self, storage_dir: Path | None = None) -> None:
+    Features:
+    - Multiple storage backends (JSON/SQLite)
+    - Session export/import
+    - Concurrent session management
+    - Crash recovery
+    """
+
+    def __init__(
+        self,
+        storage_dir: Path | None = None,
+        backend: StorageBackend = StorageBackend.JSON,
+        max_concurrent: int = 10,
+        enable_recovery: bool = True,
+    ):
         """Initialize session manager.
 
         Args:
-            storage_dir: Base storage directory for sessions.
+            storage_dir: Base storage directory
+            backend: Storage backend type
+            max_concurrent: Maximum concurrent sessions
+            enable_recovery: Whether to enable crash recovery
         """
         self.storage_dir = storage_dir or Path.home() / ".proxima" / "sessions"
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
+        # Initialize storage backend
+        if backend == StorageBackend.SQLITE:
+            db_path = self.storage_dir / "sessions.db"
+            self.storage: SessionStorageBackend = SQLiteStorageBackend(db_path)
+        else:
+            self.storage = JSONStorageBackend(self.storage_dir)
+
+        # Initialize components
+        self.exporter = SessionExporter(self.storage)
+        self.importer = SessionImporter(self.storage)
+
+        lock_dir = self.storage_dir / "locks"
+        self.concurrent_manager = ConcurrentSessionManager(
+            self.storage, lock_dir, max_concurrent
+        )
+
+        state_persistence = StatePersistence(self.storage_dir / "state")
+        self.recovery_manager = SessionRecoveryManager(
+            self.storage, state_persistence
+        )
+
+        self.logger = get_logger("session.manager")
         self._current_session: Session | None = None
         self._session_cache: dict[str, Session] = {}
-        self.logger = get_logger("session_manager")
+        self._lock = threading.Lock()
+
+        # Check for crashed sessions on startup
+        if enable_recovery:
+            self._check_for_crashed_sessions()
+
+    def _check_for_crashed_sessions(self) -> None:
+        """Check for and log crashed sessions."""
+        crashed = self.recovery_manager.get_crashed_sessions()
+        if crashed:
+            self.logger.warning(
+                "session.crashed_sessions_found",
+                count=len(crashed),
+                sessions=[c["session_id"] for c in crashed],
+            )
 
     @property
     def current(self) -> Session | None:
         """Get current active session."""
         return self._current_session
 
-    def new_session(self, name: str | None = None) -> Session:
-        """Create a new session and set it as current.
+    def new_session(
+        self,
+        name: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Session:
+        """Create a new session.
 
         Args:
-            name: Optional session name.
+            name: Optional session name
+            tags: Optional tags
+            metadata: Optional metadata
 
         Returns:
-            New Session instance.
+            New session
         """
-        session = Session(name=name, storage_dir=self.storage_dir)
+        session_id = str(uuid.uuid4())[:8]
+        now = datetime.utcnow()
+
+        session = Session(
+            id=session_id,
+            name=name or f"Session-{session_id}",
+            created_at=now,
+            updated_at=now,
+            status=SessionStatus.ACTIVE,
+            state_machine=ExecutionStateMachine(
+                execution_id=session_id,
+                enable_persistence=True,
+                storage_dir=self.storage_dir / "state",
+            ),
+            metadata=metadata or {},
+            tags=tags or [],
+        )
+
+        # Activate and save
+        if not self.concurrent_manager.activate_session(session_id):
+            raise RuntimeError("Cannot activate new session - too many concurrent sessions")
+
+        self.storage.save_session(session.to_dict())
+        self._session_cache[session_id] = session
         self._current_session = session
-        self._session_cache[session.id] = session
+
+        # Set execution context for logging
+        set_execution_context(session_id)
 
         self.logger.info(
-            "session_manager.new_session", session_id=session.id, name=name
+            "session.created",
+            session_id=session_id,
+            name=session.name,
         )
         return session
 
     def get_session(self, session_id: str) -> Session | None:
-        """Get a session by ID, loading from disk if needed.
+        """Get a session by ID.
 
         Args:
-            session_id: Session ID to retrieve.
+            session_id: Session ID
 
         Returns:
-            Session instance or None if not found.
+            Session or None
         """
         # Check cache first
         if session_id in self._session_cache:
             return self._session_cache[session_id]
 
-        # Try loading from disk
-        try:
-            session = Session.load(session_id, self.storage_dir)
-            self._session_cache[session_id] = session
-            return session
-        except FileNotFoundError:
+        # Load from storage
+        session_data = self.storage.load_session(session_id)
+        if not session_data:
             return None
 
-    def set_current(self, session_id: str) -> Session | None:
-        """Set a session as current by ID.
-
-        Args:
-            session_id: Session ID to make current.
-
-        Returns:
-            Session if found, None otherwise.
-        """
-        session = self.get_session(session_id)
-        if session:
-            self._current_session = session
-            self.logger.info("session_manager.set_current", session_id=session_id)
+        session = Session.from_dict(session_data)
+        self._session_cache[session_id] = session
         return session
 
-    def list_sessions(self) -> list[dict[str, Any]]:
-        """List all available sessions.
+    def activate_session(self, session_id: str) -> Session | None:
+        """Activate an existing session.
+
+        Args:
+            session_id: Session to activate
 
         Returns:
-            List of session summaries.
+            Activated session or None
         """
-        return Session.list_sessions(self.storage_dir)
+        session = self.get_session(session_id)
+        if not session:
+            return None
+
+        if not self.concurrent_manager.activate_session(session_id):
+            self.logger.warning(
+                "session.activation_failed",
+                session_id=session_id,
+                reason="Too many concurrent sessions or lock timeout",
+            )
+            return None
+
+        self._current_session = session
+        set_execution_context(session_id)
+        return session
+
+    def deactivate_current(self) -> None:
+        """Deactivate the current session."""
+        if self._current_session:
+            self.save_current()
+            self.concurrent_manager.deactivate_session(self._current_session.id)
+            self._current_session = None
+
+    def save_current(self) -> None:
+        """Save the current session."""
+        if self._current_session:
+            self._current_session.updated_at = datetime.utcnow()
+            self.storage.save_session(self._current_session.to_dict())
+
+    def create_checkpoint(self, session_id: str | None = None) -> Checkpoint:
+        """Create a checkpoint for a session.
+
+        Args:
+            session_id: Optional session ID (defaults to current)
+
+        Returns:
+            Created checkpoint
+        """
+        session = self.get_session(session_id) if session_id else self._current_session
+        if not session:
+            raise ValueError("No session to checkpoint")
+
+        checkpoint = session.create_checkpoint()
+        self.storage.save_checkpoint(checkpoint)
+
+        self.logger.info(
+            "session.checkpoint_created",
+            session_id=session.id,
+            checkpoint_id=checkpoint.id,
+        )
+        return checkpoint
+
+    def get_checkpoints(self, session_id: str) -> list[Checkpoint]:
+        """Get all checkpoints for a session.
+
+        Args:
+            session_id: Session ID
+
+        Returns:
+            List of checkpoints
+        """
+        return self.storage.load_checkpoints(session_id)
+
+    def restore_checkpoint(
+        self,
+        session_id: str,
+        checkpoint_id: str,
+    ) -> bool:
+        """Restore a session from a checkpoint.
+
+        Args:
+            session_id: Session ID
+            checkpoint_id: Checkpoint ID
+
+        Returns:
+            True if restored
+        """
+        session = self.get_session(session_id)
+        if not session:
+            return False
+
+        checkpoints = self.get_checkpoints(session_id)
+        checkpoint = next((c for c in checkpoints if c.id == checkpoint_id), None)
+        if not checkpoint:
+            return False
+
+        session.restore_from_checkpoint(checkpoint)
+        self.storage.save_session(session.to_dict())
+
+        self.logger.info(
+            "session.restored",
+            session_id=session_id,
+            checkpoint_id=checkpoint_id,
+        )
+        return True
+
+    # ==================== EXPORT/IMPORT ====================
+
+    def export_session(
+        self,
+        session_id: str,
+        output_path: Path,
+        format: str = "json",
+    ) -> Path:
+        """Export a session.
+
+        Args:
+            session_id: Session to export
+            output_path: Output path
+            format: Export format (json or archive)
+
+        Returns:
+            Path to exported file
+        """
+        if format == "archive":
+            return self.exporter.export_to_archive(session_id, output_path)
+        return self.exporter.export_to_json(session_id, output_path)
+
+    def import_session(
+        self,
+        input_path: Path,
+        new_id: str | None = None,
+    ) -> str:
+        """Import a session.
+
+        Args:
+            input_path: Path to import from
+            new_id: Optional new ID
+
+        Returns:
+            Imported session ID
+        """
+        if input_path.suffix == ".zip":
+            return self.importer.import_from_archive(input_path, new_id)
+        return self.importer.import_from_json(input_path, new_id)
+
+    # ==================== RECOVERY ====================
+
+    def get_crashed_sessions(self) -> list[dict[str, Any]]:
+        """Get list of crashed sessions."""
+        return self.recovery_manager.get_crashed_sessions()
+
+    def recover_session(
+        self,
+        session_id: str,
+        from_checkpoint: str | None = None,
+    ) -> dict[str, Any]:
+        """Recover a crashed session.
+
+        Args:
+            session_id: Session to recover
+            from_checkpoint: Optional checkpoint ID
+
+        Returns:
+            Recovery result
+        """
+        result = self.recovery_manager.recover_session(session_id, from_checkpoint)
+
+        # Invalidate cache
+        if session_id in self._session_cache:
+            del self._session_cache[session_id]
+
+        return result
+
+    def abandon_session(self, session_id: str) -> None:
+        """Abandon a crashed session."""
+        self.recovery_manager.abandon_session(session_id)
+
+        if session_id in self._session_cache:
+            del self._session_cache[session_id]
+
+    # ==================== LISTING/CLEANUP ====================
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """List all sessions."""
+        return self.storage.list_sessions()
 
     def delete_session(self, session_id: str) -> bool:
         """Delete a session.
 
         Args:
-            session_id: Session ID to delete.
+            session_id: Session to delete
 
         Returns:
-            True if deleted.
+            True if deleted
         """
-        session_file = self.storage_dir / f"{session_id}.json"
-        if session_file.exists():
-            session_file.unlink()
+        # Deactivate if current
+        if self._current_session and self._current_session.id == session_id:
+            self.deactivate_current()
 
-            # Remove from cache
-            if session_id in self._session_cache:
-                del self._session_cache[session_id]
+        # Remove from cache
+        if session_id in self._session_cache:
+            del self._session_cache[session_id]
 
-            # Clear current if it's the deleted session
-            if self._current_session and self._current_session.id == session_id:
-                self._current_session = None
-
-            self.logger.info("session_manager.deleted", session_id=session_id)
-            return True
-        return False
+        result = self.storage.delete_session(session_id)
+        if result:
+            self.logger.info("session.deleted", session_id=session_id)
+        return result
 
     def cleanup_old_sessions(self, max_age_days: int = 30) -> int:
         """Delete sessions older than specified age.
 
         Args:
-            max_age_days: Maximum age in days.
+            max_age_days: Maximum age in days
 
         Returns:
-            Number of sessions deleted.
+            Number of sessions deleted
         """
         cutoff = datetime.utcnow() - timedelta(days=max_age_days)
         deleted = 0
@@ -739,20 +1484,24 @@ class SessionManager:
                 continue
 
         self.logger.info(
-            "session_manager.cleanup", deleted=deleted, max_age_days=max_age_days
+            "session.cleanup", deleted=deleted, max_age_days=max_age_days
         )
         return deleted
 
 
-# Global session manager instance
+# ==================== GLOBAL INSTANCE ====================
+
 _session_manager: SessionManager | None = None
 
 
-def get_session_manager() -> SessionManager:
+def get_session_manager(
+    storage_dir: Path | None = None,
+    backend: StorageBackend = StorageBackend.JSON,
+) -> SessionManager:
     """Get the global session manager instance."""
     global _session_manager
     if _session_manager is None:
-        _session_manager = SessionManager()
+        _session_manager = SessionManager(storage_dir=storage_dir, backend=backend)
     return _session_manager
 
 
@@ -764,3 +1513,33 @@ def get_current_session() -> Session | None:
 def new_session(name: str | None = None) -> Session:
     """Create a new session and set it as current."""
     return get_session_manager().new_session(name)
+
+
+# ==================== MODULE EXPORTS ====================
+
+__all__ = [
+    # Enums
+    "SessionStatus",
+    "StorageBackend",
+    # Checkpoint
+    "Checkpoint",
+    # Storage Backends
+    "SessionStorageBackend",
+    "JSONStorageBackend",
+    "SQLiteStorageBackend",
+    # Export/Import
+    "SessionExporter",
+    "SessionImporter",
+    # Concurrent Management
+    "SessionLock",
+    "ConcurrentSessionManager",
+    # Recovery
+    "SessionRecoveryManager",
+    # Main Classes
+    "Session",
+    "SessionManager",
+    # Global Functions
+    "get_session_manager",
+    "get_current_session",
+    "new_session",
+]

@@ -2041,3 +2041,1145 @@ def run_agent_file(
     """
     interpreter = AgentInterpreter(consent_manager=consent_manager)
     return interpreter.execute_file(file_path, context)
+
+
+# ==================== ENHANCED AGENT.MD PARSING ====================
+
+
+class AgentMDParseError(Exception):
+    """Error during agent.md parsing."""
+
+    def __init__(
+        self,
+        message: str,
+        line_number: int | None = None,
+        section: str | None = None,
+        original_error: Exception | None = None,
+    ):
+        self.message = message
+        self.line_number = line_number
+        self.section = section
+        self.original_error = original_error
+        super().__init__(self._format_message())
+
+    def _format_message(self) -> str:
+        parts = [self.message]
+        if self.line_number:
+            parts.append(f" (line {self.line_number})")
+        if self.section:
+            parts.append(f" in section '{self.section}'")
+        return "".join(parts)
+
+
+@dataclass
+class MarkdownSection:
+    """A parsed section from a Markdown file."""
+
+    title: str
+    level: int
+    content: str
+    start_line: int
+    end_line: int
+    subsections: list["MarkdownSection"] = field(default_factory=list)
+
+
+@dataclass
+class FrontmatterData:
+    """Parsed YAML frontmatter from agent.md."""
+
+    raw: str
+    data: dict[str, Any]
+    start_line: int
+    end_line: int
+
+
+class EnhancedMarkdownParser:
+    """Enhanced parser for agent.md files with full Markdown support.
+
+    Features:
+    - YAML frontmatter parsing
+    - Nested section extraction
+    - Code block handling
+    - Variable interpolation
+    - Include directive support
+    """
+
+    FRONTMATTER_PATTERN = re.compile(r"^---\s*$", re.MULTILINE)
+    HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+    CODE_BLOCK_PATTERN = re.compile(r"```(\w+)?\s*\n(.*?)\n```", re.DOTALL)
+    VARIABLE_PATTERN = re.compile(r"\{\{\s*(\w+(?:\.\w+)*)\s*\}\}")
+    INCLUDE_PATTERN = re.compile(r"^<!--\s*include:\s*(.+?)\s*-->", re.MULTILINE)
+
+    def __init__(self, base_path: Path | None = None):
+        """Initialize the parser.
+
+        Args:
+            base_path: Base path for resolving include directives
+        """
+        self.base_path = base_path or Path.cwd()
+
+    def parse(self, content: str) -> tuple[FrontmatterData | None, list[MarkdownSection]]:
+        """Parse markdown content into frontmatter and sections.
+
+        Args:
+            content: Raw markdown content
+
+        Returns:
+            Tuple of (frontmatter, sections)
+        """
+        lines = content.split("\n")
+
+        # Extract frontmatter
+        frontmatter = self._extract_frontmatter(lines)
+
+        # Skip frontmatter lines for section parsing
+        start_line = frontmatter.end_line + 1 if frontmatter else 0
+        remaining_lines = lines[start_line:]
+
+        # Parse sections
+        sections = self._extract_sections(remaining_lines, start_line)
+
+        return frontmatter, sections
+
+    def _extract_frontmatter(self, lines: list[str]) -> FrontmatterData | None:
+        """Extract YAML frontmatter from the beginning of the file."""
+        if not lines or lines[0].strip() != "---":
+            return None
+
+        end_idx = None
+        for idx, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                end_idx = idx
+                break
+
+        if end_idx is None:
+            return None
+
+        frontmatter_lines = lines[1:end_idx]
+        raw_yaml = "\n".join(frontmatter_lines)
+
+        try:
+            data = yaml.safe_load(raw_yaml) or {}
+        except yaml.YAMLError as exc:
+            raise AgentMDParseError(
+                f"Invalid YAML frontmatter: {exc}",
+                line_number=2,
+                section="frontmatter",
+                original_error=exc,
+            )
+
+        return FrontmatterData(
+            raw=raw_yaml,
+            data=data,
+            start_line=0,
+            end_line=end_idx,
+        )
+
+    def _extract_sections(
+        self,
+        lines: list[str],
+        offset: int = 0,
+    ) -> list[MarkdownSection]:
+        """Extract sections from markdown lines."""
+        sections: list[MarkdownSection] = []
+        current_section: MarkdownSection | None = None
+        content_lines: list[str] = []
+
+        for idx, line in enumerate(lines):
+            actual_line = idx + offset
+
+            match = self.HEADING_PATTERN.match(line)
+            if match:
+                # Save previous section
+                if current_section:
+                    current_section.content = "\n".join(content_lines).strip()
+                    current_section.end_line = actual_line - 1
+                    sections.append(current_section)
+                    content_lines = []
+
+                # Start new section
+                level = len(match.group(1))
+                title = match.group(2).strip()
+                current_section = MarkdownSection(
+                    title=title,
+                    level=level,
+                    content="",
+                    start_line=actual_line,
+                    end_line=actual_line,
+                )
+            elif current_section:
+                content_lines.append(line)
+
+        # Don't forget the last section
+        if current_section:
+            current_section.content = "\n".join(content_lines).strip()
+            current_section.end_line = len(lines) + offset - 1
+            sections.append(current_section)
+
+        # Organize into hierarchy
+        return self._organize_sections(sections)
+
+    def _organize_sections(
+        self,
+        flat_sections: list[MarkdownSection],
+    ) -> list[MarkdownSection]:
+        """Organize flat sections into a hierarchy based on heading levels."""
+        if not flat_sections:
+            return []
+
+        root_sections: list[MarkdownSection] = []
+        section_stack: list[MarkdownSection] = []
+
+        for section in flat_sections:
+            # Pop sections from stack until we find a parent
+            while section_stack and section_stack[-1].level >= section.level:
+                section_stack.pop()
+
+            if section_stack:
+                # Add as subsection
+                section_stack[-1].subsections.append(section)
+            else:
+                # Top-level section
+                root_sections.append(section)
+
+            section_stack.append(section)
+
+        return root_sections
+
+    def extract_code_blocks(self, content: str) -> list[tuple[str, str]]:
+        """Extract code blocks from markdown content.
+
+        Returns:
+            List of (language, code) tuples
+        """
+        blocks = []
+        for match in self.CODE_BLOCK_PATTERN.finditer(content):
+            lang = match.group(1) or ""
+            code = match.group(2)
+            blocks.append((lang, code))
+        return blocks
+
+    def interpolate_variables(
+        self,
+        content: str,
+        variables: dict[str, Any],
+    ) -> str:
+        """Replace variable placeholders with values.
+
+        Args:
+            content: Content with {{ variable }} placeholders
+            variables: Variable values
+
+        Returns:
+            Interpolated content
+        """
+        def replace_var(match: re.Match) -> str:
+            var_path = match.group(1)
+            value = self._get_nested_value(variables, var_path)
+            return str(value) if value is not None else match.group(0)
+
+        return self.VARIABLE_PATTERN.sub(replace_var, content)
+
+    def _get_nested_value(
+        self,
+        data: dict[str, Any],
+        path: str,
+    ) -> Any:
+        """Get a nested value from a dict using dot notation."""
+        parts = path.split(".")
+        value = data
+        for part in parts:
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            else:
+                return None
+        return value
+
+    def process_includes(self, content: str) -> str:
+        """Process include directives.
+
+        Args:
+            content: Content with <!-- include: path --> directives
+
+        Returns:
+            Content with includes expanded
+        """
+        def replace_include(match: re.Match) -> str:
+            include_path = match.group(1).strip()
+            full_path = self.base_path / include_path
+
+            if not full_path.exists():
+                return f"<!-- ERROR: Include not found: {include_path} -->"
+
+            try:
+                return full_path.read_text(encoding="utf-8")
+            except Exception as exc:
+                return f"<!-- ERROR: Could not read include: {exc} -->"
+
+        return self.INCLUDE_PATTERN.sub(replace_include, content)
+
+
+
+# ==================== COMMAND VALIDATION ====================
+
+
+class CommandValidationError(Exception):
+    """Error during command validation."""
+
+    def __init__(
+        self,
+        message: str,
+        command: str | None = None,
+        parameter: str | None = None,
+        suggestions: list[str] | None = None,
+    ):
+        self.message = message
+        self.command = command
+        self.parameter = parameter
+        self.suggestions = suggestions or []
+        super().__init__(self._format_message())
+
+    def _format_message(self) -> str:
+        parts = [self.message]
+        if self.command:
+            parts.append(f" (command: {self.command})")
+        if self.parameter:
+            parts.append(f" (parameter: {self.parameter})")
+        if self.suggestions:
+            parts.append(f" Suggestions: {', '.join(self.suggestions)}")
+        return "".join(parts)
+
+
+@dataclass
+class ValidationResult:
+    """Result of command validation."""
+
+    valid: bool
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    normalized_command: dict[str, Any] | None = None
+
+
+@dataclass
+class ParameterSpec:
+    """Specification for a command parameter."""
+
+    name: str
+    type: type | tuple[type, ...]
+    required: bool = False
+    default: Any = None
+    choices: list[Any] | None = None
+    min_value: float | None = None
+    max_value: float | None = None
+    pattern: str | None = None
+    validator: Callable[[Any], bool] | None = None
+    description: str = ""
+
+
+@dataclass
+class CommandSpec:
+    """Specification for a command."""
+
+    name: str
+    parameters: list[ParameterSpec] = field(default_factory=list)
+    required_params: list[str] = field(default_factory=list)
+    description: str = ""
+    aliases: list[str] = field(default_factory=list)
+    requires_consent: bool = False
+
+
+class CommandValidator:
+    """Validates commands before execution.
+
+    Features:
+    - Parameter type checking
+    - Required parameter validation
+    - Range and choice validation
+    - Pattern matching
+    - Custom validators
+    - Command normalization
+    """
+
+    def __init__(self):
+        """Initialize the validator with built-in command specs."""
+        self._command_specs: dict[str, CommandSpec] = {}
+        self._alias_map: dict[str, str] = {}
+        self._register_builtin_commands()
+
+    def _register_builtin_commands(self) -> None:
+        """Register built-in command specifications."""
+        # Circuit execution command
+        self.register_command(CommandSpec(
+            name="execute_circuit",
+            parameters=[
+                ParameterSpec("qubits", int, required=True, min_value=1, max_value=50),
+                ParameterSpec("shots", int, required=False, default=1024, min_value=1, max_value=1000000),
+                ParameterSpec("backend", str, required=False, default="cirq"),
+                ParameterSpec("gates", list, required=False, default=[]),
+                ParameterSpec("measurements", bool, required=False, default=True),
+            ],
+            aliases=["run_circuit", "exec"],
+            description="Execute a quantum circuit",
+        ))
+
+        # Backend comparison command
+        self.register_command(CommandSpec(
+            name="compare_backends",
+            parameters=[
+                ParameterSpec("backends", list, required=True),
+                ParameterSpec("qubits", int, required=True, min_value=1, max_value=50),
+                ParameterSpec("shots", int, required=False, default=1024),
+                ParameterSpec("metrics", list, required=False, default=["fidelity", "time"]),
+            ],
+            aliases=["backend_comparison", "compare"],
+            description="Compare results across backends",
+        ))
+
+        # Export command
+        self.register_command(CommandSpec(
+            name="export_results",
+            parameters=[
+                ParameterSpec("format", str, required=False, default="json", choices=["json", "csv", "qasm", "pdf"]),
+                ParameterSpec("path", str, required=False),
+                ParameterSpec("include_analysis", bool, required=False, default=True),
+            ],
+            aliases=["export", "save"],
+            description="Export execution results",
+        ))
+
+        # Analysis command
+        self.register_command(CommandSpec(
+            name="analyze_results",
+            parameters=[
+                ParameterSpec("type", str, required=False, default="summary", choices=["summary", "detailed", "comparison"]),
+                ParameterSpec("metrics", list, required=False),
+                ParameterSpec("visualize", bool, required=False, default=False),
+            ],
+            aliases=["analyze", "analysis"],
+            description="Analyze execution results",
+        ))
+
+    def register_command(self, spec: CommandSpec) -> None:
+        """Register a command specification."""
+        self._command_specs[spec.name] = spec
+        for alias in spec.aliases:
+            self._alias_map[alias] = spec.name
+
+    def get_command_spec(self, command_name: str) -> CommandSpec | None:
+        """Get the specification for a command."""
+        # Check direct name
+        if command_name in self._command_specs:
+            return self._command_specs[command_name]
+        # Check aliases
+        if command_name in self._alias_map:
+            return self._command_specs[self._alias_map[command_name]]
+        return None
+
+    def validate(
+        self,
+        command_name: str,
+        parameters: dict[str, Any],
+    ) -> ValidationResult:
+        """Validate a command and its parameters.
+
+        Args:
+            command_name: Name of the command
+            parameters: Command parameters
+
+        Returns:
+            ValidationResult with validation status
+        """
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        # Resolve command name
+        spec = self.get_command_spec(command_name)
+        if not spec:
+            similar = self._find_similar_commands(command_name)
+            return ValidationResult(
+                valid=False,
+                errors=[f"Unknown command: {command_name}"],
+                warnings=[f"Did you mean: {', '.join(similar)}"] if similar else [],
+            )
+
+        normalized = {}
+
+        # Validate parameters
+        param_specs = {p.name: p for p in spec.parameters}
+
+        # Check required parameters
+        for param_name in spec.required_params:
+            if param_name not in parameters:
+                errors.append(f"Missing required parameter: {param_name}")
+
+        # Check for required params defined in ParameterSpec
+        for param_spec in spec.parameters:
+            if param_spec.required and param_spec.name not in parameters:
+                errors.append(f"Missing required parameter: {param_spec.name}")
+
+        # Validate each provided parameter
+        for param_name, value in parameters.items():
+            if param_name not in param_specs:
+                similar = self._find_similar_params(param_name, spec)
+                if similar:
+                    warnings.append(f"Unknown parameter '{param_name}'. Did you mean: {', '.join(similar)}?")
+                else:
+                    warnings.append(f"Unknown parameter: {param_name}")
+                continue
+
+            param_spec = param_specs[param_name]
+            validated_value, param_errors = self._validate_parameter(value, param_spec)
+
+            if param_errors:
+                errors.extend(param_errors)
+            else:
+                normalized[param_name] = validated_value
+
+        # Apply defaults for missing optional parameters
+        for param_spec in spec.parameters:
+            if param_spec.name not in normalized and not param_spec.required:
+                normalized[param_spec.name] = param_spec.default
+
+        return ValidationResult(
+            valid=len(errors) == 0,
+            errors=errors,
+            warnings=warnings,
+            normalized_command={
+                "name": spec.name,
+                "parameters": normalized,
+            } if len(errors) == 0 else None,
+        )
+
+    def _validate_parameter(
+        self,
+        value: Any,
+        spec: ParameterSpec,
+    ) -> tuple[Any, list[str]]:
+        """Validate a single parameter."""
+        errors = []
+
+        # Type check
+        if not isinstance(value, spec.type):
+            try:
+                # Try to coerce
+                if spec.type == int:
+                    value = int(value)
+                elif spec.type == float:
+                    value = float(value)
+                elif spec.type == bool:
+                    value = str(value).lower() in ("true", "1", "yes")
+                elif spec.type == str:
+                    value = str(value)
+            except (ValueError, TypeError):
+                errors.append(f"Parameter '{spec.name}' expected {spec.type.__name__}, got {type(value).__name__}")
+                return value, errors
+
+        # Range check for numbers
+        if isinstance(value, (int, float)):
+            if spec.min_value is not None and value < spec.min_value:
+                errors.append(f"Parameter '{spec.name}' must be >= {spec.min_value}")
+            if spec.max_value is not None and value > spec.max_value:
+                errors.append(f"Parameter '{spec.name}' must be <= {spec.max_value}")
+
+        # Choice check
+        if spec.choices and value not in spec.choices:
+            errors.append(f"Parameter '{spec.name}' must be one of: {', '.join(str(c) for c in spec.choices)}")
+
+        # Pattern check
+        if spec.pattern and isinstance(value, str):
+            if not re.match(spec.pattern, value):
+                errors.append(f"Parameter '{spec.name}' does not match required pattern")
+
+        # Custom validator
+        if spec.validator:
+            try:
+                if not spec.validator(value):
+                    errors.append(f"Parameter '{spec.name}' failed custom validation")
+            except Exception as exc:
+                errors.append(f"Parameter '{spec.name}' validation error: {exc}")
+
+        return value, errors
+
+    def _find_similar_commands(self, name: str) -> list[str]:
+        """Find commands similar to the given name."""
+        all_names = list(self._command_specs.keys()) + list(self._alias_map.keys())
+        return self._find_similar(name, all_names)
+
+    def _find_similar_params(self, name: str, spec: CommandSpec) -> list[str]:
+        """Find parameters similar to the given name."""
+        param_names = [p.name for p in spec.parameters]
+        return self._find_similar(name, param_names)
+
+    def _find_similar(self, target: str, candidates: list[str], max_distance: int = 3) -> list[str]:
+        """Find similar strings using Levenshtein distance."""
+        similar = []
+        target_lower = target.lower()
+
+        for candidate in candidates:
+            candidate_lower = candidate.lower()
+
+            # Simple substring check
+            if target_lower in candidate_lower or candidate_lower in target_lower:
+                similar.append(candidate)
+                continue
+
+            # Calculate edit distance (simplified)
+            distance = self._edit_distance(target_lower, candidate_lower)
+            if distance <= max_distance:
+                similar.append(candidate)
+
+        return similar[:3]  # Return top 3
+
+    def _edit_distance(self, s1: str, s2: str) -> int:
+        """Calculate simple edit distance between two strings."""
+        if len(s1) < len(s2):
+            return self._edit_distance(s2, s1)
+
+        if len(s2) == 0:
+            return len(s1)
+
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+
+        return previous_row[-1]
+
+
+
+# ==================== ERROR RECOVERY STRATEGIES ====================
+
+
+class RecoveryAction(Enum):
+    """Actions that can be taken to recover from errors."""
+
+    RETRY = "retry"
+    SKIP = "skip"
+    FALLBACK = "fallback"
+    ABORT = "abort"
+    ROLLBACK = "rollback"
+    PROMPT_USER = "prompt_user"
+    USE_CACHED = "use_cached"
+    REDUCE_LOAD = "reduce_load"
+
+
+@dataclass
+class RecoveryResult:
+    """Result of a recovery attempt."""
+
+    success: bool
+    action_taken: RecoveryAction
+    message: str
+    recovered_data: Any = None
+    retry_count: int = 0
+
+
+@dataclass
+class ErrorContext:
+    """Context information about an error."""
+
+    error: Exception
+    error_type: str
+    task_id: str | None = None
+    stage: str | None = None
+    attempt: int = 1
+    max_attempts: int = 3
+    start_time: float = 0.0
+    additional_info: dict[str, Any] = field(default_factory=dict)
+
+
+class RecoveryStrategy(ABC):
+    """Base class for error recovery strategies."""
+
+    @abstractmethod
+    def can_recover(self, context: ErrorContext) -> bool:
+        """Check if this strategy can handle the error."""
+        pass
+
+    @abstractmethod
+    def recover(self, context: ErrorContext) -> RecoveryResult:
+        """Attempt to recover from the error."""
+        pass
+
+    @property
+    @abstractmethod
+    def priority(self) -> int:
+        """Priority of this strategy (lower = higher priority)."""
+        pass
+
+
+class RetryStrategy(RecoveryStrategy):
+    """Strategy that retries failed operations with exponential backoff."""
+
+    def __init__(
+        self,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 30.0,
+        exponential: bool = True,
+        jitter: bool = True,
+    ):
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.exponential = exponential
+        self.jitter = jitter
+
+    @property
+    def priority(self) -> int:
+        return 10
+
+    def can_recover(self, context: ErrorContext) -> bool:
+        """Can retry if we haven't exceeded max attempts."""
+        return context.attempt <= self.max_retries
+
+    def recover(self, context: ErrorContext) -> RecoveryResult:
+        """Schedule a retry with appropriate delay."""
+        if context.attempt > self.max_retries:
+            return RecoveryResult(
+                success=False,
+                action_taken=RecoveryAction.RETRY,
+                message=f"Max retries ({self.max_retries}) exceeded",
+                retry_count=context.attempt - 1,
+            )
+
+        delay = self._calculate_delay(context.attempt)
+        time.sleep(delay)
+
+        return RecoveryResult(
+            success=True,
+            action_taken=RecoveryAction.RETRY,
+            message=f"Retrying (attempt {context.attempt}/{self.max_retries})",
+            retry_count=context.attempt,
+        )
+
+    def _calculate_delay(self, attempt: int) -> float:
+        """Calculate delay with optional exponential backoff and jitter."""
+        if self.exponential:
+            delay = self.base_delay * (2 ** (attempt - 1))
+        else:
+            delay = self.base_delay
+
+        delay = min(delay, self.max_delay)
+
+        if self.jitter:
+            import random
+            delay = delay * (0.5 + random.random())
+
+        return delay
+
+
+class FallbackStrategy(RecoveryStrategy):
+    """Strategy that uses fallback options when primary fails."""
+
+    def __init__(
+        self,
+        fallback_backends: list[str] | None = None,
+        fallback_values: dict[str, Any] | None = None,
+    ):
+        self.fallback_backends = fallback_backends or ["cirq", "qiskit", "numpy"]
+        self.fallback_values = fallback_values or {}
+        self._current_fallback_idx = 0
+
+    @property
+    def priority(self) -> int:
+        return 20
+
+    def can_recover(self, context: ErrorContext) -> bool:
+        """Can use fallback if there are alternatives available."""
+        # Check if we have fallback options
+        if "backend" in context.additional_info:
+            current = context.additional_info["backend"]
+            return any(b != current for b in self.fallback_backends)
+        return bool(self.fallback_values)
+
+    def recover(self, context: ErrorContext) -> RecoveryResult:
+        """Switch to a fallback option."""
+        if "backend" in context.additional_info:
+            current = context.additional_info["backend"]
+            for backend in self.fallback_backends:
+                if backend != current:
+                    return RecoveryResult(
+                        success=True,
+                        action_taken=RecoveryAction.FALLBACK,
+                        message=f"Switching from {current} to fallback backend {backend}",
+                        recovered_data={"backend": backend},
+                    )
+
+        if self.fallback_values:
+            return RecoveryResult(
+                success=True,
+                action_taken=RecoveryAction.FALLBACK,
+                message="Using fallback values",
+                recovered_data=self.fallback_values,
+            )
+
+        return RecoveryResult(
+            success=False,
+            action_taken=RecoveryAction.FALLBACK,
+            message="No fallback options available",
+        )
+
+
+class CacheStrategy(RecoveryStrategy):
+    """Strategy that uses cached results when live execution fails."""
+
+    def __init__(self, cache_dir: Path | None = None):
+        self.cache_dir = cache_dir or Path.home() / ".proxima" / "cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def priority(self) -> int:
+        return 30
+
+    def can_recover(self, context: ErrorContext) -> bool:
+        """Check if we have cached data for this context."""
+        cache_key = self._get_cache_key(context)
+        cache_path = self.cache_dir / f"{cache_key}.json"
+        return cache_path.exists()
+
+    def recover(self, context: ErrorContext) -> RecoveryResult:
+        """Load cached data."""
+        cache_key = self._get_cache_key(context)
+        cache_path = self.cache_dir / f"{cache_key}.json"
+
+        try:
+            import json
+            with open(cache_path, encoding="utf-8") as f:
+                cached_data = json.load(f)
+
+            return RecoveryResult(
+                success=True,
+                action_taken=RecoveryAction.USE_CACHED,
+                message=f"Using cached result from {cached_data.get('timestamp', 'unknown')}",
+                recovered_data=cached_data.get("data"),
+            )
+        except Exception as exc:
+            return RecoveryResult(
+                success=False,
+                action_taken=RecoveryAction.USE_CACHED,
+                message=f"Failed to load cache: {exc}",
+            )
+
+    def _get_cache_key(self, context: ErrorContext) -> str:
+        """Generate a cache key from the context."""
+        import hashlib
+        key_parts = [
+            context.task_id or "unknown",
+            context.stage or "unknown",
+            str(context.additional_info),
+        ]
+        key_str = "|".join(key_parts)
+        return hashlib.md5(key_str.encode()).hexdigest()
+
+    def cache_result(
+        self,
+        context: ErrorContext,
+        data: Any,
+    ) -> None:
+        """Cache a successful result for future recovery."""
+        import json
+        from datetime import datetime
+
+        cache_key = self._get_cache_key(context)
+        cache_path = self.cache_dir / f"{cache_key}.json"
+
+        cache_data = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "task_id": context.task_id,
+            "stage": context.stage,
+            "data": data,
+        }
+
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(cache_data, f, indent=2, default=str)
+
+
+class ReduceLoadStrategy(RecoveryStrategy):
+    """Strategy that reduces workload to recover from resource exhaustion."""
+
+    def __init__(
+        self,
+        reduction_factor: float = 0.5,
+        min_value: int = 1,
+    ):
+        self.reduction_factor = reduction_factor
+        self.min_value = min_value
+
+    @property
+    def priority(self) -> int:
+        return 25
+
+    def can_recover(self, context: ErrorContext) -> bool:
+        """Check if this is a resource-related error."""
+        error_str = str(context.error).lower()
+        resource_keywords = ["memory", "oom", "resource", "timeout", "limit", "exhausted"]
+        return any(kw in error_str for kw in resource_keywords)
+
+    def recover(self, context: ErrorContext) -> RecoveryResult:
+        """Reduce workload parameters."""
+        reduced_params = {}
+
+        # Reduce shots
+        if "shots" in context.additional_info:
+            current = context.additional_info["shots"]
+            reduced = max(int(current * self.reduction_factor), self.min_value)
+            reduced_params["shots"] = reduced
+
+        # Reduce qubits if possible
+        if "qubits" in context.additional_info:
+            current = context.additional_info["qubits"]
+            reduced = max(int(current * self.reduction_factor), self.min_value)
+            reduced_params["qubits"] = reduced
+
+        # Reduce batch size
+        if "batch_size" in context.additional_info:
+            current = context.additional_info["batch_size"]
+            reduced = max(int(current * self.reduction_factor), self.min_value)
+            reduced_params["batch_size"] = reduced
+
+        if reduced_params:
+            return RecoveryResult(
+                success=True,
+                action_taken=RecoveryAction.REDUCE_LOAD,
+                message=f"Reduced parameters: {reduced_params}",
+                recovered_data=reduced_params,
+            )
+
+        return RecoveryResult(
+            success=False,
+            action_taken=RecoveryAction.REDUCE_LOAD,
+            message="No parameters available to reduce",
+        )
+
+
+class SkipStrategy(RecoveryStrategy):
+    """Strategy that skips failed tasks and continues."""
+
+    def __init__(self, skippable_stages: list[str] | None = None):
+        self.skippable_stages = skippable_stages or [
+            "analysis",
+            "export",
+            "visualization",
+        ]
+
+    @property
+    def priority(self) -> int:
+        return 40
+
+    def can_recover(self, context: ErrorContext) -> bool:
+        """Check if the current stage is skippable."""
+        if not context.stage:
+            return False
+        return context.stage.lower() in [s.lower() for s in self.skippable_stages]
+
+    def recover(self, context: ErrorContext) -> RecoveryResult:
+        """Skip the current task."""
+        return RecoveryResult(
+            success=True,
+            action_taken=RecoveryAction.SKIP,
+            message=f"Skipping stage '{context.stage}' and continuing",
+        )
+
+
+class ErrorRecoveryManager:
+    """Manages error recovery strategies.
+
+    Features:
+    - Multiple recovery strategies
+    - Priority-based strategy selection
+    - Automatic retry with backoff
+    - Fallback mechanisms
+    - Caching of successful results
+    - Workload reduction
+    """
+
+    def __init__(self):
+        self.strategies: list[RecoveryStrategy] = []
+        self._register_default_strategies()
+        import structlog
+        self.logger = structlog.get_logger("recovery")
+
+    def _register_default_strategies(self) -> None:
+        """Register default recovery strategies."""
+        self.register_strategy(RetryStrategy())
+        self.register_strategy(FallbackStrategy())
+        self.register_strategy(CacheStrategy())
+        self.register_strategy(ReduceLoadStrategy())
+        self.register_strategy(SkipStrategy())
+
+    def register_strategy(self, strategy: RecoveryStrategy) -> None:
+        """Register a recovery strategy."""
+        self.strategies.append(strategy)
+        # Sort by priority
+        self.strategies.sort(key=lambda s: s.priority)
+
+    def attempt_recovery(
+        self,
+        error: Exception,
+        task_id: str | None = None,
+        stage: str | None = None,
+        attempt: int = 1,
+        max_attempts: int = 3,
+        **additional_info,
+    ) -> RecoveryResult:
+        """Attempt to recover from an error.
+
+        Args:
+            error: The exception that occurred
+            task_id: ID of the failed task
+            stage: Current pipeline stage
+            attempt: Current attempt number
+            max_attempts: Maximum retry attempts
+            **additional_info: Additional context
+
+        Returns:
+            RecoveryResult with recovery outcome
+        """
+        context = ErrorContext(
+            error=error,
+            error_type=type(error).__name__,
+            task_id=task_id,
+            stage=stage,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            start_time=time.time(),
+            additional_info=additional_info,
+        )
+
+        self.logger.info(
+            "recovery.attempting",
+            error_type=context.error_type,
+            task_id=task_id,
+            stage=stage,
+            attempt=attempt,
+        )
+
+        # Try each strategy in priority order
+        for strategy in self.strategies:
+            if strategy.can_recover(context):
+                result = strategy.recover(context)
+
+                self.logger.info(
+                    "recovery.result",
+                    strategy=type(strategy).__name__,
+                    action=result.action_taken.value,
+                    success=result.success,
+                )
+
+                if result.success:
+                    return result
+
+        # All strategies failed
+        return RecoveryResult(
+            success=False,
+            action_taken=RecoveryAction.ABORT,
+            message="All recovery strategies exhausted",
+        )
+
+    def with_recovery(
+        self,
+        func: Callable[..., Any],
+        task_id: str | None = None,
+        stage: str | None = None,
+        max_attempts: int = 3,
+        **additional_info,
+    ) -> tuple[bool, Any, RecoveryResult | None]:
+        """Execute a function with automatic error recovery.
+
+        Args:
+            func: Function to execute
+            task_id: Task identifier
+            stage: Current stage
+            max_attempts: Maximum retry attempts
+            **additional_info: Additional context
+
+        Returns:
+            Tuple of (success, result, last_recovery_result)
+        """
+        attempt = 1
+        last_recovery: RecoveryResult | None = None
+        current_params = additional_info.copy()
+
+        while attempt <= max_attempts:
+            try:
+                result = func(**current_params)
+                return True, result, last_recovery
+            except Exception as exc:
+                self.logger.warning(
+                    "recovery.error",
+                    error=str(exc),
+                    attempt=attempt,
+                )
+
+                recovery_result = self.attempt_recovery(
+                    error=exc,
+                    task_id=task_id,
+                    stage=stage,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    **current_params,
+                )
+                last_recovery = recovery_result
+
+                if not recovery_result.success:
+                    return False, None, recovery_result
+
+                # Apply recovered parameters
+                if recovery_result.recovered_data:
+                    if isinstance(recovery_result.recovered_data, dict):
+                        current_params.update(recovery_result.recovered_data)
+
+                if recovery_result.action_taken == RecoveryAction.SKIP:
+                    return True, None, recovery_result
+
+                attempt += 1
+
+        return False, None, last_recovery
+
+
+# ==================== UPDATED EXPORTS ====================
+
+
+__all__ = [
+    # Existing exports (keep original)
+    "TaskType",
+    "TaskStatus",
+    "ValidationSeverity",
+    "ValidationIssue",
+    "AgentMetadata",
+    "AgentConfiguration",
+    "TaskDefinition",
+    "AgentFile",
+    "TaskResult",
+    "ExecutionReport",
+    "AgentInterpreter",
+    "run_agent_file",
+    # Enhanced parsing
+    "AgentMDParseError",
+    "MarkdownSection",
+    "FrontmatterData",
+    "EnhancedMarkdownParser",
+    # Command validation
+    "CommandValidationError",
+    "ValidationResult",
+    "ParameterSpec",
+    "CommandSpec",
+    "CommandValidator",
+    # Error recovery
+    "RecoveryAction",
+    "RecoveryResult",
+    "ErrorContext",
+    "RecoveryStrategy",
+    "RetryStrategy",
+    "FallbackStrategy",
+    "CacheStrategy",
+    "ReduceLoadStrategy",
+    "SkipStrategy",
+    "ErrorRecoveryManager",
+]
