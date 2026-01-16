@@ -1,4 +1,4 @@
-"""LRET backend adapter with comprehensive implementation.
+﻿"""LRET backend adapter with comprehensive implementation.
 
 LRET (Lightweight Runtime Execution Toolkit) integration for quantum simulations.
 Target: https://github.com/kunal5556/LRET (feature/framework-integration branch)
@@ -633,19 +633,19 @@ class LRETAPIVerifier:
         ]
         
         for api in verification.available_apis:
-            lines.append(f"  ✓ {api}")
+            lines.append(f"  âœ“ {api}")
         
         if verification.missing_apis:
             lines.append("")
             lines.append("Missing APIs:")
             for api in verification.missing_apis:
-                lines.append(f"  ✗ {api}")
+                lines.append(f"  âœ— {api}")
         
         if verification.warnings:
             lines.append("")
             lines.append("Warnings:")
             for warning in verification.warnings:
-                lines.append(f"  ⚠ {warning}")
+                lines.append(f"  âš  {warning}")
         
         return "\n".join(lines)
 
@@ -888,9 +888,14 @@ class LRETBackendAdapter(BaseBackendAdapter):
             return None
 
         if isinstance(circuit, dict):
-            gates = circuit.get("gates", circuit.get("operations", []))
-            if isinstance(gates, list):
-                return len(gates)
+            # Check each possible key - only return count if key exists
+            for key in ("gates", "operations", "instructions"):
+                if key in circuit:
+                    gates = circuit[key]
+                    if isinstance(gates, list):
+                        return len(gates)
+            # No gate-related keys found
+            return None
 
         for attr in ("gates", "operations", "instructions"):
             val = getattr(circuit, attr, None)
@@ -941,6 +946,9 @@ class LRETBackendAdapter(BaseBackendAdapter):
                 logger.warning("Real LRET execution failed, using mock: %s", exc)
                 result = self._execute_mock(circuit, shots, **kwargs)
         else:
+            # LRET not available - check if mock mode is allowed
+            if not self._use_mock:
+                raise BackendNotInstalledError("lret", ["lret"])
             result = self._execute_mock(circuit, shots, **kwargs)
 
         execution_time_ms = (time.time() - start_time) * 1000
@@ -1381,7 +1389,7 @@ class MockLRETSimulator:
                 if isinstance(val, list):
                     return len(val)
             # Infer from gates
-            gates = circuit.get("gates", circuit.get("operations", []))
+            gates = circuit.get("gates", circuit.get("operations", circuit.get("instructions", [])))
             if gates:
                 max_qubit = 0
                 for gate in gates:
@@ -1413,7 +1421,7 @@ class MockLRETSimulator:
         # Get gates from circuit
         gates = []
         if isinstance(circuit, dict):
-            gates = circuit.get("gates", circuit.get("operations", []))
+            gates = circuit.get("gates", circuit.get("operations", circuit.get("instructions", [])))
         elif hasattr(circuit, "gates"):
             gates = circuit.gates
 
@@ -1600,3 +1608,5 @@ def get_mock_lret_module() -> Any:
         ]
 
     return MockLRETModule()
+
+

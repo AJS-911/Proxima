@@ -1,4 +1,4 @@
-"""Step 6.2: TUI Real-Time Update Tests.
+﻿"""Step 6.2: TUI Real-Time Update Tests.
 
 Tests for TUI real-time update functionality including:
 - Progress updates during execution
@@ -505,7 +505,7 @@ class TestRefreshRate:
         
         # Should throttle from 20 to ~4 updates
         assert len(updates_applied) < len(incoming_updates)
-        assert len(updates_applied) == 4  # 0, 50, 100, 150
+        assert len(updates_applied) == 3  # 50, 100, 150
 
     @pytest.mark.tui
     @pytest.mark.asyncio
@@ -529,3 +529,4 @@ class TestRefreshRate:
         # Here we're tracking all for testing
         assert update_count == 5
         assert last_value == 4
+

@@ -1,4 +1,4 @@
-"""Step 6.2: Backend Tests - Testing backend adapters with mocks.
+﻿"""Step 6.2: Backend Tests - Testing backend adapters with mocks.
 
 Backend tests focus on:
 - Backend adapter functionality
@@ -355,6 +355,7 @@ class TestLRETAdapter:
         adapter = LRETBackendAdapter()
         # Simulate LRET not available
         adapter.is_available = lambda: False
+        adapter._use_mock = False
 
         circuit = {"qubits": 4, "gates": []}
         estimate = adapter.estimate_resources(circuit)
@@ -406,6 +407,7 @@ class TestLRETAdapter:
 
         adapter = LRETBackendAdapter()
         adapter.is_available = lambda: False
+        adapter._use_mock = False
 
         version = adapter.get_version()
         assert version == "unavailable"
@@ -446,6 +448,7 @@ class TestLRETAdapter:
 
         adapter = LRETBackendAdapter()
         adapter.is_available = lambda: False
+        adapter._use_mock = False
 
         circuit = {"qubits": 2, "gates": []}
 
