@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from collections.abc import Callable
@@ -57,20 +58,22 @@ class SessionService:
     
     def create_session(
         self,
-        session_id: str,
+        session_id: str | None = None,
         name: str = "",
         backend: str = "auto",
         config: dict[str, Any] | None = None,
         ttl_minutes: int | None = None,
+        **kwargs,  # Accept additional kwargs for flexibility
     ) -> dict[str, Any]:
         """Create a new session.
         
         Args:
-            session_id: Unique session identifier.
+            session_id: Unique session identifier (auto-generated if not provided).
             name: Optional session name.
             backend: Default backend for the session.
             config: Session configuration.
             ttl_minutes: Session TTL in minutes.
+            **kwargs: Additional configuration options (ignored).
         
         Returns:
             Created session data.
@@ -83,6 +86,10 @@ class SessionService:
             self._cleanup_expired()
             if len(self._sessions) >= self._max_sessions:
                 raise ValueError("Maximum session limit reached")
+        
+        # Auto-generate session_id if not provided
+        if session_id is None:
+            session_id = str(uuid.uuid4())
         
         ttl = ttl_minutes or self._default_ttl
         now = datetime.now(timezone.utc)
