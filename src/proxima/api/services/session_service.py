@@ -41,6 +41,8 @@ class SessionService:
             "session_created": [],
             "session_expired": [],
             "session_deleted": [],
+            "session_paused": [],
+            "session_resumed": [],
         }
     
     @property
@@ -92,7 +94,7 @@ class SessionService:
             session_id = str(uuid.uuid4())
         
         ttl = ttl_minutes or self._default_ttl
-        now = datetime.now(timezone.utc)
+        now = self._get_current_time()
         expires_at = now + timedelta(minutes=ttl)
         
         session = {
@@ -105,8 +107,9 @@ class SessionService:
             "last_activity": now.isoformat(),
             "expires_at": expires_at.isoformat(),
             "ttl_minutes": ttl,
+            "max_jobs": kwargs.get("max_jobs"),
             "jobs": [],
-            "history": [],
+            "history": [{"timestamp": now.isoformat(), "event": "created", "details": {}}],
         }
         
         self._sessions[session_id] = session
@@ -134,13 +137,15 @@ class SessionService:
     def update_session(
         self,
         session_id: str,
-        updates: dict[str, Any],
+        updates: dict[str, Any] | None = None,
+        **kwargs,
     ) -> dict[str, Any] | None:
         """Update session data.
         
         Args:
             session_id: The session identifier.
-            updates: Fields to update.
+            updates: Fields to update (dict form).
+            **kwargs: Fields to update (keyword form).
         
         Returns:
             Updated session or None if not found.
@@ -149,9 +154,13 @@ class SessionService:
         if not session:
             return None
         
-        now = datetime.now(timezone.utc)
+        # Merge updates dict and kwargs
+        all_updates = updates or {}
+        all_updates.update(kwargs)
         
-        for key, value in updates.items():
+        now = self._get_current_time()
+        
+        for key, value in all_updates.items():
             if key in ["session_id", "created_at"]:
                 continue  # Don't allow updating these
             if key == "config" and isinstance(value, dict):
@@ -177,7 +186,7 @@ class SessionService:
         if not session:
             return False
         
-        now = datetime.now(timezone.utc)
+        now = self._get_current_time()
         session["last_activity"] = now.isoformat()
         
         # Extend expiration
@@ -275,8 +284,8 @@ class SessionService:
             return False
         
         entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "action": action,
+            "timestamp": self._get_current_time().isoformat(),
+            "event": action,
             "details": details or {},
         }
         
@@ -330,7 +339,7 @@ class SessionService:
             expires_at = datetime.fromisoformat(
                 session["expires_at"].replace('Z', '+00:00')
             )
-            return datetime.now(timezone.utc) > expires_at
+            return self._get_current_time() > expires_at
         except (KeyError, ValueError):
             return False
     
@@ -408,6 +417,7 @@ class SessionService:
         session["status"] = "paused"
         session["last_activity"] = self._get_current_time().isoformat()
         self.add_history_entry(session_id, "paused")
+        self._notify_handlers("session_paused", session)
         
         return session
 
@@ -456,7 +466,12 @@ class SessionService:
             return None
         
         if session["status"] != "active":
-            return None
+            raise ValueError(f"Cannot submit job to session in {session['status']} state (paused or inactive)")
+        
+        # Check max_jobs limit
+        max_jobs = session.get("max_jobs")
+        if max_jobs is not None and len(session.get("jobs", [])) >= max_jobs:
+            raise ValueError(f"Session has reached maximum job limit of {max_jobs}")
         
         job_id = str(uuid.uuid4())
         now = self._get_current_time()
@@ -489,3 +504,45 @@ class SessionService:
         if not session:
             return []
         return session.get("history", [])
+
+    def get_session_jobs(self, session_id: str) -> list[str]:
+        """Get list of job IDs for a session.
+        
+        Args:
+            session_id: The session identifier.
+        
+        Returns:
+            List of job IDs.
+        """
+        session = self._sessions.get(session_id)
+        if not session:
+            return []
+        return session.get("jobs", [])
+
+    def get_job_status(self, job_id: str) -> str | None:
+        """Get the status of a job.
+        
+        Args:
+            job_id: The job identifier.
+        
+        Returns:
+            Job status or None if not found.
+        """
+        # Search through all sessions for the job
+        for session in self._sessions.values():
+            for job in session.get("_jobs_data", []):
+                if job.get("job_id") == job_id:
+                    return job.get("status")
+        return None
+
+    def get_expired_sessions(self) -> list[dict[str, Any]]:
+        """Get list of expired sessions.
+        
+        Returns:
+            List of expired session data.
+        """
+        expired = []
+        for session in self._sessions.values():
+            if self._is_expired(session):
+                expired.append(session)
+        return expired
