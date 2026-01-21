@@ -80,14 +80,14 @@ class StatusIndicator(Static):
     """
 
     ICONS = {
-        "success": "?",
-        "error": "?",
-        "warning": "?",
-        "info": "?",
-        "pending": "?",
-        "running": "?",
-        "connected": "?",
-        "disconnected": "?",
+        "success": "✓",
+        "error": "✗",
+        "warning": "⚠",
+        "info": "ℹ",
+        "pending": "○",
+        "running": "◉",
+        "connected": "●",
+        "disconnected": "○",
     }
 
     status = reactive("pending")
