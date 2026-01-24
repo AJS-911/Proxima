@@ -27,40 +27,19 @@ def launch(
 
 def launch_tui(theme: str = "dark", screen: str = "dashboard") -> None:
     """Launch the Proxima TUI with the specified theme and screen."""
-    try:
-        from proxima.tui.app import ProximaApp
-    except ImportError as e:
-        typer.echo("TUI dependencies not installed.", err=True)
-        typer.echo("Install with: pip install proxima-agent[tui]", err=True)
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
-
-    # Validate theme option
-    valid_themes = ["dark", "light"]
-    if theme.lower() not in valid_themes:
-        typer.echo(
-            f"Invalid theme '{theme}'. Valid options: {', '.join(valid_themes)}",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    # Validate screen option
-    valid_screens = ["dashboard", "execution", "configuration", "results", "backends"]
-    if screen.lower() not in valid_screens:
-        typer.echo(
-            f"Invalid screen '{screen}'. Valid options: {', '.join(valid_screens)}",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    typer.echo(f"Launching Proxima TUI (theme={theme}, screen={screen})...")
-
-    try:
-        app = ProximaApp(theme=theme, initial_screen=screen)
-        app.run()
-    except Exception as e:
-        typer.echo(f"TUI error: {e}", err=True)
-        raise typer.Exit(1)
+    typer.echo("=" * 50)
+    typer.echo("  Proxima TUI - Coming Soon!")
+    typer.echo("=" * 50)
+    typer.echo("")
+    typer.echo("  The TUI is being rebuilt from scratch.")
+    typer.echo("  Please check back soon for the new interface.")
+    typer.echo("")
+    typer.echo("  In the meantime, you can use the CLI commands:")
+    typer.echo("    proxima run <circuit>")
+    typer.echo("    proxima benchmark <suite>")
+    typer.echo("    proxima config show")
+    typer.echo("")
+    raise typer.Exit(0)
 
 
 @app.command("check")

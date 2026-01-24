@@ -1,0 +1,290 @@
+"""Execution screen for Proxima TUI.
+
+Live execution monitoring with progress and controls.
+"""
+
+from textual.containers import Horizontal, Vertical, Container
+from textual.widgets import Static, Button, RichLog
+from rich.text import Text
+from rich.panel import Panel
+
+from .base import BaseScreen
+from ..styles.theme import get_theme
+from ..components.progress import ProgressBar, StageTimeline
+
+
+class ExecutionScreen(BaseScreen):
+    """Execution monitoring screen.
+    
+    Shows:
+    - Current execution info
+    - Progress bar
+    - Stage timeline
+    - Execution controls
+    - Log viewer
+    """
+    
+    SCREEN_NAME = "execution"
+    SCREEN_TITLE = "Execution Monitor"
+    
+    BINDINGS = [
+        ("p", "pause_execution", "Pause"),
+        ("r", "resume_execution", "Resume"),
+        ("a", "abort_execution", "Abort"),
+        ("z", "rollback", "Rollback"),
+        ("l", "toggle_log", "Toggle Log"),
+    ]
+    
+    DEFAULT_CSS = """
+    ExecutionScreen .execution-panel {
+        height: auto;
+        margin-bottom: 1;
+        padding: 1;
+        border: solid $primary;
+        background: $surface;
+    }
+    
+    ExecutionScreen .execution-title {
+        text-style: bold;
+        color: $text;
+        margin-bottom: 1;
+    }
+    
+    ExecutionScreen .execution-info {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    
+    ExecutionScreen .progress-section {
+        margin: 1 0;
+    }
+    
+    ExecutionScreen .timeline-section {
+        margin: 1 0;
+        padding: 1;
+        border: solid $primary-darken-2;
+        background: $surface-darken-1;
+    }
+    
+    ExecutionScreen .controls-section {
+        height: auto;
+        layout: horizontal;
+        margin: 1 0;
+    }
+    
+    ExecutionScreen .control-button {
+        margin-right: 1;
+        min-width: 12;
+    }
+    
+    ExecutionScreen .log-section {
+        height: 1fr;
+        border: solid $primary-darken-2;
+        background: $surface-darken-2;
+    }
+    
+    ExecutionScreen .log-section.-hidden {
+        display: none;
+    }
+    """
+    
+    def __init__(self, **kwargs):
+        """Initialize the execution screen."""
+        super().__init__(**kwargs)
+        self._log_visible = True
+    
+    def compose_main(self):
+        """Compose the execution screen content."""
+        with Vertical(classes="main-content"):
+            # Execution panel
+            with Container(classes="execution-panel"):
+                yield Static(
+                    "Execution Monitor",
+                    classes="execution-title",
+                )
+                yield ExecutionInfoPanel(self.state)
+                
+                # Progress bar
+                with Vertical(classes="progress-section"):
+                    yield ProgressBar(
+                        progress=self.state.progress_percent,
+                        stage_name=f"Stage {self.state.stage_index + 1}/{self.state.total_stages}: {self.state.current_stage}",
+                        eta_text=f"Elapsed: {self.state.get_formatted_elapsed()}  |  ETA: {self.state.get_formatted_eta()}",
+                    )
+                
+                # Stage timeline
+                with Vertical(classes="timeline-section"):
+                    yield StageTimeline(
+                        stages=self.state.all_stages,
+                        current_index=self.state.stage_index,
+                        total_elapsed_ms=self.state.elapsed_ms,
+                        total_eta_ms=self.state.eta_ms,
+                    )
+            
+            # Controls
+            with Horizontal(classes="controls-section"):
+                yield Button(
+                    "[P] Pause",
+                    id="btn-pause",
+                    classes="control-button",
+                    variant="warning",
+                )
+                yield Button(
+                    "[R] Resume",
+                    id="btn-resume",
+                    classes="control-button",
+                    variant="success",
+                    disabled=True,
+                )
+                yield Button(
+                    "[A] Abort",
+                    id="btn-abort",
+                    classes="control-button",
+                    variant="error",
+                )
+                yield Button(
+                    "[Z] Rollback",
+                    id="btn-rollback",
+                    classes="control-button",
+                    disabled=not self.state.rollback_available,
+                )
+                yield Button(
+                    "[L] Toggle Log",
+                    id="btn-toggle-log",
+                    classes="control-button",
+                )
+            
+            # Log viewer
+            yield ExecutionLog(classes="log-section")
+    
+    def action_pause_execution(self) -> None:
+        """Pause the current execution."""
+        # TODO: Implement via controller
+        self.notify("Pausing execution...")
+    
+    def action_resume_execution(self) -> None:
+        """Resume the paused execution."""
+        # TODO: Implement via controller
+        self.notify("Resuming execution...")
+    
+    def action_abort_execution(self) -> None:
+        """Abort the current execution."""
+        # TODO: Show confirmation dialog
+        self.notify("Aborting execution...")
+    
+    def action_rollback(self) -> None:
+        """Rollback to the last checkpoint."""
+        if self.state.rollback_available:
+            # TODO: Show confirmation dialog
+            self.notify("Rolling back...")
+        else:
+            self.notify("No checkpoint available", severity="warning")
+    
+    def action_toggle_log(self) -> None:
+        """Toggle the log panel visibility."""
+        self._log_visible = not self._log_visible
+        log_section = self.query_one(".log-section")
+        log_section.set_class(not self._log_visible, "-hidden")
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses."""
+        button_id = event.button.id
+        
+        if button_id == "btn-pause":
+            self.action_pause_execution()
+        elif button_id == "btn-resume":
+            self.action_resume_execution()
+        elif button_id == "btn-abort":
+            self.action_abort_execution()
+        elif button_id == "btn-rollback":
+            self.action_rollback()
+        elif button_id == "btn-toggle-log":
+            self.action_toggle_log()
+
+
+class ExecutionInfoPanel(Static):
+    """Panel showing current execution information."""
+    
+    def __init__(self, state, **kwargs):
+        """Initialize the info panel."""
+        super().__init__(**kwargs)
+        self._state = state
+    
+    def render(self) -> Text:
+        """Render the execution info."""
+        theme = get_theme()
+        text = Text()
+        
+        if self._state.current_task:
+            # Task info
+            text.append("Task: ", style=theme.fg_muted)
+            text.append(self._state.current_task, style=f"bold {theme.fg_base}")
+            text.append("\n")
+            
+            # Task ID
+            if self._state.current_task_id:
+                text.append("ID: ", style=theme.fg_muted)
+                text.append(self._state.current_task_id, style=theme.fg_subtle)
+                text.append("\n")
+            
+            # Backend info
+            text.append("Backend: ", style=theme.fg_muted)
+            text.append(
+                f"{self._state.current_backend or 'N/A'} ({self._state.current_simulator or 'N/A'})",
+                style=theme.fg_base,
+            )
+            text.append(" • ", style=theme.border)
+            text.append(f"{self._state.qubits} qubits", style=theme.fg_base)
+            text.append(" • ", style=theme.border)
+            text.append(f"{self._state.shots} shots", style=theme.fg_base)
+        else:
+            text.append("No active execution", style=theme.fg_subtle)
+            text.append("\n\n")
+            text.append("Start a simulation from the Dashboard or Command Palette (Ctrl+P)",
+                       style=theme.fg_muted)
+        
+        return text
+
+
+class ExecutionLog(RichLog):
+    """Log viewer for execution output."""
+    
+    DEFAULT_CSS = """
+    ExecutionLog {
+        padding: 1;
+    }
+    """
+    
+    def on_mount(self) -> None:
+        """Set up the log."""
+        self.border_title = "Log"
+        
+        # Add sample log entries
+        self._add_sample_logs()
+    
+    def _add_sample_logs(self) -> None:
+        """Add sample log entries for demo."""
+        theme = get_theme()
+        
+        logs = [
+            ("14:30:22", "INFO", "Starting simulation with Cirq backend"),
+            ("14:30:23", "INFO", "Initialized StateVector simulator"),
+            ("14:30:24", "INFO", "Stage 1/5: Planning - completed"),
+            ("14:30:26", "INFO", "Stage 2/5: Backend Init - completed"),
+            ("14:30:27", "INFO", "Stage 3/5: Simulation - started"),
+        ]
+        
+        for timestamp, level, message in logs:
+            level_color = {
+                "INFO": theme.info,
+                "WARNING": theme.warning,
+                "ERROR": theme.error,
+                "DEBUG": theme.fg_subtle,
+            }.get(level, theme.fg_muted)
+            
+            text = Text()
+            text.append(f"[{timestamp}] ", style=theme.fg_subtle)
+            text.append(f"{level:<8}", style=f"bold {level_color}")
+            text.append(message, style=theme.fg_base)
+            
+            self.write(text)

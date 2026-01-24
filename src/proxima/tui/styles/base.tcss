@@ -1,0 +1,507 @@
+/* Proxima TUI Base Styles - Textual CSS */
+/* Quantum-inspired dark theme with magenta accents */
+
+/* ============================================ */
+/* ROOT & SCREEN STYLES                         */
+/* ============================================ */
+
+Screen {
+    background: #121212;
+    color: #FFFFFF;
+}
+
+/* ============================================ */
+/* LAYOUT CONTAINERS                            */
+/* ============================================ */
+
+.container {
+    width: 100%;
+    height: 100%;
+}
+
+.horizontal-layout {
+    layout: horizontal;
+}
+
+.vertical-layout {
+    layout: vertical;
+}
+
+.main-content {
+    width: 1fr;
+    height: 100%;
+    padding: 1;
+}
+
+/* ============================================ */
+/* SIDEBAR STYLES                               */
+/* ============================================ */
+
+.sidebar {
+    width: 32;
+    height: 100%;
+    background: #1a1a1a;
+    border-left: solid #333333;
+    padding: 1;
+}
+
+.sidebar-section {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+.sidebar-header {
+    color: #707070;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.sidebar-item {
+    width: 100%;
+    padding: 0 1;
+}
+
+.sidebar-item:hover {
+    background: #242424;
+}
+
+/* ============================================ */
+/* PANEL STYLES                                 */
+/* ============================================ */
+
+.panel {
+    border: solid #333333;
+    background: #1a1a1a;
+    padding: 1;
+    margin: 1;
+}
+
+.panel-title {
+    color: #FF00FF;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.panel:focus {
+    border: solid #FF00FF;
+}
+
+/* ============================================ */
+/* BUTTON STYLES                                */
+/* ============================================ */
+
+Button {
+    background: #242424;
+    color: #FFFFFF;
+    border: solid #333333;
+    padding: 0 2;
+    margin: 0 1;
+    min-width: 12;
+}
+
+Button:hover {
+    background: #333333;
+    border: solid #FF00FF;
+}
+
+Button:focus {
+    background: #333333;
+    border: solid #FF00FF;
+}
+
+Button.-primary {
+    background: #AA00AA;
+    color: #FFFFFF;
+    border: solid #FF00FF;
+}
+
+Button.-primary:hover {
+    background: #FF00FF;
+}
+
+Button.-success {
+    background: #00AA44;
+    border: solid #00FF66;
+}
+
+Button.-error {
+    background: #AA2222;
+    border: solid #FF3333;
+}
+
+Button.-warning {
+    background: #CC8800;
+    border: solid #FFAA00;
+}
+
+/* ============================================ */
+/* INPUT STYLES                                 */
+/* ============================================ */
+
+Input {
+    background: #242424;
+    color: #FFFFFF;
+    border: solid #333333;
+    padding: 0 1;
+}
+
+Input:focus {
+    border: solid #FF00FF;
+}
+
+Input.-invalid {
+    border: solid #FF3333;
+}
+
+/* ============================================ */
+/* DATA TABLE STYLES                            */
+/* ============================================ */
+
+DataTable {
+    background: #1a1a1a;
+    color: #FFFFFF;
+}
+
+DataTable > .datatable--header {
+    background: #242424;
+    color: #B0B0B0;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: #333333;
+    color: #FFFFFF;
+}
+
+DataTable > .datatable--hover {
+    background: #2a2a2a;
+}
+
+/* ============================================ */
+/* PROGRESS BAR STYLES                          */
+/* ============================================ */
+
+ProgressBar {
+    padding: 0 1;
+}
+
+ProgressBar > .bar--bar {
+    color: #AA00FF;
+    background: #333333;
+}
+
+ProgressBar > .bar--complete {
+    color: #FF00FF;
+}
+
+/* ============================================ */
+/* LABEL STYLES                                 */
+/* ============================================ */
+
+Label {
+    padding: 0;
+}
+
+.label-title {
+    text-style: bold;
+    color: #FFFFFF;
+}
+
+.label-subtitle {
+    color: #B0B0B0;
+}
+
+.label-muted {
+    color: #707070;
+}
+
+.label-primary {
+    color: #FF00FF;
+}
+
+.label-secondary {
+    color: #AA00FF;
+}
+
+.label-success {
+    color: #00FF66;
+}
+
+.label-error {
+    color: #FF3333;
+}
+
+.label-warning {
+    color: #FFAA00;
+}
+
+.label-info {
+    color: #00AAFF;
+}
+
+/* ============================================ */
+/* STATUS INDICATOR STYLES                      */
+/* ============================================ */
+
+.status-idle {
+    color: #808080;
+}
+
+.status-planning {
+    color: #FFAA00;
+}
+
+.status-ready {
+    color: #00AAFF;
+}
+
+.status-running {
+    color: #00FF66;
+}
+
+.status-paused {
+    color: #FFAA00;
+}
+
+.status-completed {
+    color: #00FF66;
+}
+
+.status-error {
+    color: #FF3333;
+}
+
+.status-aborted {
+    color: #FF6600;
+}
+
+/* ============================================ */
+/* MEMORY LEVEL STYLES                          */
+/* ============================================ */
+
+.memory-ok {
+    color: #00FF66;
+}
+
+.memory-info {
+    color: #00AAFF;
+}
+
+.memory-warning {
+    color: #FFAA00;
+}
+
+.memory-critical {
+    color: #FF6600;
+}
+
+.memory-abort {
+    color: #FF3333;
+}
+
+/* ============================================ */
+/* BACKEND HEALTH STYLES                        */
+/* ============================================ */
+
+.health-healthy {
+    color: #00FF66;
+}
+
+.health-degraded {
+    color: #FFAA00;
+}
+
+.health-unhealthy {
+    color: #FF3333;
+}
+
+.health-unknown {
+    color: #808080;
+}
+
+/* ============================================ */
+/* DIALOG STYLES                                */
+/* ============================================ */
+
+.dialog {
+    background: #2a2a2a;
+    border: solid #FF00FF;
+    padding: 1 2;
+    width: 60%;
+    max-width: 80;
+    height: auto;
+    max-height: 80%;
+}
+
+.dialog-title {
+    text-style: bold;
+    color: #FF00FF;
+    text-align: center;
+    margin-bottom: 1;
+}
+
+.dialog-content {
+    padding: 1;
+}
+
+.dialog-buttons {
+    layout: horizontal;
+    align: center middle;
+    margin-top: 1;
+}
+
+/* ============================================ */
+/* COMMAND PALETTE STYLES                       */
+/* ============================================ */
+
+.command-palette {
+    background: #2a2a2a;
+    border: solid #FF00FF;
+    width: 70%;
+    max-width: 100;
+    height: 60%;
+}
+
+.command-input {
+    background: #242424;
+    border: solid #333333;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+.command-input:focus {
+    border: solid #FF00FF;
+}
+
+.command-list {
+    height: 1fr;
+}
+
+.command-item {
+    padding: 0 1;
+}
+
+.command-item:hover {
+    background: #333333;
+}
+
+.command-item.-selected {
+    background: #AA00AA;
+}
+
+.command-category {
+    color: #707070;
+    padding: 0 1;
+}
+
+/* ============================================ */
+/* LOG VIEWER STYLES                            */
+/* ============================================ */
+
+.log-viewer {
+    background: #0a0a0a;
+    border: solid #333333;
+    padding: 1;
+}
+
+.log-entry {
+    padding: 0;
+}
+
+.log-timestamp {
+    color: #707070;
+}
+
+.log-level-info {
+    color: #00AAFF;
+}
+
+.log-level-warning {
+    color: #FFAA00;
+}
+
+.log-level-error {
+    color: #FF3333;
+}
+
+.log-level-debug {
+    color: #808080;
+}
+
+/* ============================================ */
+/* RESULT VIEWER STYLES                         */
+/* ============================================ */
+
+.result-viewer {
+    background: #1a1a1a;
+    border: solid #333333;
+    padding: 1;
+}
+
+.probability-bar {
+    padding: 0;
+}
+
+.probability-label {
+    color: #00FFFF;
+    text-style: bold;
+}
+
+.probability-value {
+    color: #B0B0B0;
+}
+
+/* ============================================ */
+/* FOOTER STYLES                                */
+/* ============================================ */
+
+.footer {
+    height: 3;
+    background: #1a1a1a;
+    border-top: solid #333333;
+    padding: 0 1;
+}
+
+.footer-key {
+    color: #707070;
+}
+
+.footer-action {
+    color: #B0B0B0;
+}
+
+.footer-separator {
+    color: #333333;
+}
+
+/* ============================================ */
+/* ANIMATIONS                                   */
+/* ============================================ */
+
+.fade-in {
+    opacity: 1;
+}
+
+.fade-out {
+    opacity: 0;
+}
+
+/* ============================================ */
+/* QUANTUM-SPECIFIC STYLES                      */
+/* ============================================ */
+
+.qubit-zero {
+    color: #00AAFF;
+}
+
+.qubit-one {
+    color: #FF00FF;
+}
+
+.entangled {
+    color: #AA00FF;
+}
+
+.superposition {
+    color: #00FFFF;
+}

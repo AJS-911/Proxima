@@ -1,0 +1,257 @@
+"""Session Controller for Proxima TUI.
+
+Handles session management, switching, and recovery.
+"""
+
+from typing import Optional, Callable, List, Dict, Any
+from datetime import datetime
+from dataclasses import dataclass
+
+from ..state import TUIState
+from ..state.events import SessionCreated, SessionSwitched, SessionEnded
+
+
+@dataclass
+class SessionInfo:
+    """Information about a session."""
+    
+    id: str
+    title: str
+    status: str  # active, paused, completed, aborted, error
+    created_at: datetime
+    backend: Optional[str] = None
+    task: Optional[str] = None
+    working_directory: Optional[str] = None
+    last_activity: Optional[datetime] = None
+
+
+class SessionController:
+    """Controller for session management.
+    
+    Handles creating, switching, listing, and recovering sessions.
+    """
+    
+    def __init__(self, state: TUIState):
+        """Initialize the session controller.
+        
+        Args:
+            state: The TUI state instance
+        """
+        self.state = state
+        self._session_manager = None  # Will be set when Proxima core is available
+        self._sessions: Dict[str, SessionInfo] = {}
+        self._event_callbacks: List[Callable] = []
+    
+    @property
+    def current_session(self) -> Optional[SessionInfo]:
+        """Get the current session."""
+        if self.state.active_session_id:
+            return self._sessions.get(self.state.active_session_id)
+        return None
+    
+    @property
+    def has_active_session(self) -> bool:
+        """Check if there's an active session."""
+        return self.state.active_session_id is not None
+    
+    def create_session(
+        self,
+        title: str,
+        working_directory: Optional[str] = None,
+    ) -> SessionInfo:
+        """Create a new session.
+        
+        Args:
+            title: Session title
+            working_directory: Working directory path
+        
+        Returns:
+            Created session info
+        """
+        session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        session = SessionInfo(
+            id=session_id,
+            title=title,
+            status="active",
+            created_at=datetime.now(),
+            working_directory=working_directory,
+            last_activity=datetime.now(),
+        )
+        
+        self._sessions[session_id] = session
+        
+        # Switch to new session
+        self.switch_session(session_id)
+        
+        self._emit_event(SessionCreated(
+            session_id=session_id,
+            title=title,
+        ))
+        
+        return session
+    
+    def switch_session(self, session_id: str) -> bool:
+        """Switch to a different session.
+        
+        Args:
+            session_id: ID of session to switch to
+        
+        Returns:
+            True if switch was successful
+        """
+        if session_id not in self._sessions:
+            return False
+        
+        previous_id = self.state.active_session_id
+        session = self._sessions[session_id]
+        
+        # Update state
+        self.state.active_session_id = session_id
+        self.state.session_title = session.title
+        self.state.session_status = session.status
+        self.state.working_directory = session.working_directory
+        
+        self._emit_event(SessionSwitched(
+            previous_id=previous_id,
+            new_id=session_id,
+            title=session.title,
+        ))
+        
+        return True
+    
+    def end_session(self, status: str = "completed") -> bool:
+        """End the current session.
+        
+        Args:
+            status: Final session status
+        
+        Returns:
+            True if session was ended
+        """
+        if not self.has_active_session:
+            return False
+        
+        session_id = self.state.active_session_id
+        session = self._sessions.get(session_id)
+        
+        if session:
+            session.status = status
+            session.last_activity = datetime.now()
+        
+        self._emit_event(SessionEnded(
+            session_id=session_id,
+            status=status,
+        ))
+        
+        # Clear current session
+        self.state.active_session_id = None
+        self.state.session_title = None
+        self.state.session_status = "active"
+        
+        return True
+    
+    def list_sessions(self, include_ended: bool = False) -> List[SessionInfo]:
+        """List all sessions.
+        
+        Args:
+            include_ended: Include completed/aborted sessions
+        
+        Returns:
+            List of session info
+        """
+        sessions = list(self._sessions.values())
+        
+        if not include_ended:
+            sessions = [s for s in sessions if s.status not in ["completed", "aborted"]]
+        
+        # Sort by last activity (most recent first)
+        sessions.sort(
+            key=lambda s: s.last_activity or s.created_at,
+            reverse=True,
+        )
+        
+        return sessions
+    
+    def get_recent_sessions(self, limit: int = 5) -> List[SessionInfo]:
+        """Get recent sessions.
+        
+        Args:
+            limit: Maximum number of sessions to return
+        
+        Returns:
+            List of recent session info
+        """
+        sessions = self.list_sessions(include_ended=True)
+        return sessions[:limit]
+    
+    def recover_session(self, session_id: str) -> bool:
+        """Recover a crashed or paused session.
+        
+        Args:
+            session_id: ID of session to recover
+        
+        Returns:
+            True if recovery was initiated
+        """
+        if session_id not in self._sessions:
+            return False
+        
+        session = self._sessions[session_id]
+        
+        if session.status not in ["crashed", "paused", "error"]:
+            return False
+        
+        # Update status to recovering
+        session.status = "recovering"
+        
+        # Switch to the session
+        self.switch_session(session_id)
+        
+        # TODO: Trigger actual recovery via Proxima core
+        # self._session_manager.recover(session_id)
+        
+        return True
+    
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session.
+        
+        Args:
+            session_id: ID of session to delete
+        
+        Returns:
+            True if session was deleted
+        """
+        if session_id not in self._sessions:
+            return False
+        
+        # Can't delete active session
+        if session_id == self.state.active_session_id:
+            return False
+        
+        del self._sessions[session_id]
+        return True
+    
+    def update_session_activity(self) -> None:
+        """Update the current session's last activity timestamp."""
+        if self.has_active_session:
+            session = self._sessions.get(self.state.active_session_id)
+            if session:
+                session.last_activity = datetime.now()
+    
+    def on_event(self, callback: Callable) -> None:
+        """Register an event callback.
+        
+        Args:
+            callback: Function to call on events
+        """
+        self._event_callbacks.append(callback)
+    
+    def _emit_event(self, event: Any) -> None:
+        """Emit an event to callbacks.
+        
+        Args:
+            event: Event to emit
+        """
+        for callback in self._event_callbacks:
+            callback(event)
