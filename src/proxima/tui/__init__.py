@@ -35,8 +35,19 @@ from .dialogs import (
 )
 from . import util
 
+# Backward compatibility aliases
+from .styles_compat import Theme, ColorPalette, get_palette, get_css
+from .modals import ConfirmModal, DialogResult, ModalResponse
+from .widgets import StatusPanel, LogPanel, BackendCard, ExecutionCard, ProgressBar
+from .controllers import EventBus, StateManager, NavigationController
+
+# Alias for backward compatibility
+ProximaApp = ProximaTUI
+
 __all__ = [
+    # Main app
     "ProximaTUI",
+    "ProximaApp",  # Backward compatibility alias
     "launch",
     "TUIState",
     # Screens
@@ -56,6 +67,25 @@ __all__ = [
     "BackendsDialog",
     "SessionsDialog",
     "ErrorDialog",
+    # Backward compatibility - styles
+    "Theme",
+    "ColorPalette",
+    "get_palette",
+    "get_css",
+    # Backward compatibility - modals
+    "ConfirmModal",
+    "DialogResult",
+    "ModalResponse",
+    # Backward compatibility - widgets
+    "StatusPanel",
+    "LogPanel",
+    "BackendCard",
+    "ExecutionCard",
+    "ProgressBar",
+    # Backward compatibility - controllers
+    "EventBus",
+    "StateManager",
+    "NavigationController",
     # Utilities
     "util",
 ]

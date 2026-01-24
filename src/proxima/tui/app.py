@@ -148,5 +148,9 @@ def launch(theme: str = "dark", initial_screen: str = "dashboard") -> None:
     app.run()
 
 
+# Backward compatibility alias
+ProximaApp = ProximaTUI
+
+
 if __name__ == "__main__":
     launch()
