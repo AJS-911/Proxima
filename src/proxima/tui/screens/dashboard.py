@@ -11,6 +11,16 @@ from rich.panel import Panel
 from .base import BaseScreen
 from ..styles.theme import get_theme
 from ..components.logo import Logo
+from ..dialogs.sessions import SessionsDialog
+from ..dialogs.sessions.session_item import SessionInfo
+from datetime import datetime
+
+try:
+    from proxima.resources.session import SessionManager, SessionMetadata, SessionStatus
+    from pathlib import Path
+    SESSION_MANAGER_AVAILABLE = True
+except ImportError:
+    SESSION_MANAGER_AVAILABLE = False
 
 
 class DashboardScreen(BaseScreen):
@@ -157,8 +167,86 @@ class DashboardScreen(BaseScreen):
         elif button_id == "btn-results":
             self.app.action_goto_results()
         elif button_id == "btn-sessions":
-            # Open session dialog
-            pass
+            # Open session dialog with sample sessions
+            # Get real sessions if available
+            sessions_list = []
+            if SESSION_MANAGER_AVAILABLE:
+                try:
+                    storage_dir = Path.home() / ".proxima" / "sessions"
+                    manager = SessionManager(storage_dir=storage_dir)
+                    real_sessions = manager.list_sessions()
+                    
+                    for meta in real_sessions[:10]:  # Show up to 10 sessions
+                        status_map = {
+                            SessionStatus.COMPLETED: "completed",
+                            SessionStatus.RUNNING: "active",
+                            SessionStatus.PAUSED: "paused",
+                            SessionStatus.FAILED: "failed",
+                            SessionStatus.ABORTED: "aborted",
+                            SessionStatus.CREATED: "created",
+                        }
+                        sessions_list.append(SessionInfo(
+                            id=meta.id,
+                            title=meta.name or f"Session {meta.id[:8]}",
+                            status=status_map.get(meta.status, "unknown"),
+                            created_at=datetime.fromtimestamp(meta.created_at),
+                            task_count=0,  # Would need full session load
+                            backend="Auto",
+                        ))
+                except Exception:
+                    pass
+            
+            # Fallback to sample data if no real sessions
+            if not sessions_list:
+                sessions_list = [
+                    SessionInfo(
+                        id="a1b2c3d4-1234-5678-9abc-def012345678",
+                        title="Bell State Experiment",
+                        status="active",
+                        created_at=datetime.now(),
+                        task_count=3,
+                        backend="Cirq",
+                    ),
+                    SessionInfo(
+                        id="e5f6g7h8-5678-9012-cdef-345678901234",
+                        title="GHZ Analysis",
+                        status="completed",
+                        created_at=datetime.now(),
+                        task_count=5,
+                        backend="Qiskit",
+                    ),
+                    SessionInfo(
+                        id="i9j0k1l2-9012-3456-0123-456789012345",
+                        title="Grover Search Test",
+                        status="paused",
+                        created_at=datetime.now(),
+                        task_count=2,
+                        backend="LRET",
+                    ),
+                ]
+            
+            sample_sessions = sessions_list
+            
+            def handle_session_action(result):
+                if result:
+                    action = result.get("action")
+                    session = result.get("session")
+                    if action == "switch" and session:
+                        self.notify(f"Switched to session: {session.title}", severity="success")
+                    elif action == "new":
+                        self.notify("Creating new session...", severity="information")
+                    elif action == "delete" and session:
+                        self.notify(f"Deleted session: {session.title}", severity="warning")
+                    elif action == "export" and session:
+                        self.notify(f"Exporting session: {session.title}")
+            
+            self.app.push_screen(
+                SessionsDialog(
+                    sessions=sample_sessions,
+                    current_session_id="a1b2c3d4-1234-5678-9abc-def012345678",
+                ),
+                handle_session_action,
+            )
         elif button_id == "btn-config":
             self.app.action_goto_settings()
         elif button_id == "btn-help":

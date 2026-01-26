@@ -1,5 +1,11 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel", "build"]
+# Build system configuration - compatible with all Visual Studio versions
+requires = [
+    "setuptools>=68.0",
+    "wheel",
+    "build",
+    # Cython is needed for some quantum packages, provide optional fallback
+]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -78,7 +84,8 @@ dependencies = [
     # Quantum backends
     "cirq>=1.3.0",
     "qiskit>=0.45.0",
-    "qiskit-aer>=0.13.0",
+    # qiskit-aer - using versions with pre-built wheels for maximum VS compatibility
+    "qiskit-aer>=0.15.0",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,26 @@
+# Build Requirements for Proxima
+# ================================
+# This file specifies build-time dependencies with maximum Visual Studio compatibility.
+# It ensures that packages with C++ extensions can be built on any VS version.
+
+# Core build tools - always needed
+setuptools>=68.0
+wheel>=0.41.0
+build>=1.0.0
+
+# For packages that use Cython
+Cython>=3.0.0; python_version >= "3.11"
+
+# For packages that use pybind11 (like qiskit-aer)
+pybind11>=2.11.0
+
+# For packages that use cmake
+cmake>=3.20.0; platform_system == "Windows"
+
+# NumPy is a build dependency for many scientific packages
+# Use versions with good wheel support
+numpy>=1.24.0,<2.0.0; python_version < "3.12"
+numpy>=1.26.0; python_version >= "3.12"
+
+# Ensure we have compatible typing extensions
+typing-extensions>=4.8.0

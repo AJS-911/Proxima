@@ -110,6 +110,26 @@ cd Pseudo-Proxima
 pip install -e ".[all]"
 ```
 
+### Windows Installation
+
+For Windows users, especially with Visual Studio 2022 or newer:
+
+```powershell
+# Clone the repository
+git clone https://github.com/prthmmkhija1/Pseudo-Proxima.git
+cd Pseudo-Proxima
+
+# Run the Windows installation script (auto-detects VS version)
+.\scripts\install-windows.ps1
+
+# Or install manually with binary preference
+python scripts\configure_build.py
+pip install -e ".[all]" --prefer-binary
+```
+
+> **Note:** Proxima supports all Visual Studio versions (2015-2022+) automatically.
+> See [WINDOWS_BUILD.md](WINDOWS_BUILD.md) for detailed Windows instructions.
+
 ---
 
 ## 💻 Usage

@@ -3,11 +3,23 @@
 LRET (Lightweight Runtime Execution Toolkit) integration for quantum simulations.
 Target: https://github.com/kunal5556/LRET (feature/framework-integration branch)
 
+Installation:
+    # From pip (when available):
+    pip install lret
+    
+    # From source (framework-integration branch):
+    git clone https://github.com/kunal5556/LRET.git
+    cd LRET
+    git checkout feature/framework-integration
+    pip install -e .
+
 This module provides:
-- Complete result normalization for all LRET output formats
+- Complete result normalization for all LRET output formats  
 - Framework-integration branch API verification
 - Comprehensive error handling and logging
 - Mock simulator for testing when LRET is not installed
+- Automatic fallback with meaningful error messages
+- Real LRET library detection and version reporting
 """
 
 from __future__ import annotations
@@ -39,6 +51,24 @@ from proxima.backends.exceptions import (
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# LRET Configuration Constants
+LRET_GITHUB_URL = "https://github.com/kunal5556/LRET"
+LRET_BRANCH = "feature/framework-integration"
+LRET_INSTALL_INSTRUCTIONS = '''
+To install LRET for real quantum simulation:
+
+Option 1: pip install (when available)
+  pip install lret
+
+Option 2: From source (recommended for framework-integration):
+  git clone https://github.com/kunal5556/LRET.git
+  cd LRET
+  git checkout feature/framework-integration  
+  pip install -e .
+
+For more information, visit: https://github.com/kunal5556/LRET
+'''
 
 
 # ==============================================================================
@@ -1273,6 +1303,60 @@ class LRETBackendAdapter(BaseBackendAdapter):
     def is_available(self) -> bool:
         """Check if LRET is installed and importable."""
         return importlib.util.find_spec("lret") is not None
+
+    def get_installation_instructions(self) -> str:
+        """Get instructions for installing LRET.
+        
+        Returns:
+            String with installation instructions.
+        """
+        return LRET_INSTALL_INSTRUCTIONS
+
+    def get_library_status(self) -> dict:
+        """Get comprehensive status of LRET library installation.
+        
+        Returns:
+            Dictionary with installation status, version, and recommendations.
+        """
+        status = {
+            "installed": self.is_available(),
+            "version": None,
+            "branch": None,
+            "api_compatible": False,
+            "using_mock": True,
+            "recommendations": [],
+        }
+        
+        if self.is_available():
+            try:
+                lret = self._get_lret_module()
+                status["version"] = getattr(lret, "__version__", "unknown")
+                status["branch"] = getattr(lret, "_BRANCH", "unknown")
+                status["using_mock"] = False
+                
+                # Verify API compatibility
+                api_check = self.get_api_verification()
+                status["api_compatible"] = api_check.is_compatible
+                
+                if not api_check.is_compatible:
+                    if api_check.missing_apis:
+                        status["recommendations"].append(
+                            f"Missing APIs: {', '.join(api_check.missing_apis)}"
+                        )
+                    status["recommendations"].append(
+                        "Consider switching to feature/framework-integration branch"
+                    )
+            except Exception as e:
+                status["recommendations"].append(f"Import error: {e}")
+        else:
+            status["recommendations"].append(
+                "LRET not installed. Install from: " + LRET_GITHUB_URL
+            )
+            status["recommendations"].append(
+                "Using mock simulator for testing"
+            )
+        
+        return status
 
     def _get_lret_module(self) -> Any:
         """Get the LRET module, importing if needed."""

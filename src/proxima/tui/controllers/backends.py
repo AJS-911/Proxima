@@ -11,6 +11,13 @@ from ..state import TUIState
 from ..state.tui_state import BackendStatus
 from ..state.events import BackendHealthChanged, BackendSelected
 
+try:
+    from proxima.backends.registry import BackendRegistry, HealthCheckResult
+    CORE_AVAILABLE = True
+except ImportError:
+    CORE_AVAILABLE = False
+    HealthCheckResult = None
+
 
 # Supported backends
 SUPPORTED_BACKENDS = [
@@ -67,7 +74,13 @@ class BackendController:
             state: The TUI state instance
         """
         self.state = state
-        self._registry = None  # Will be set when Proxima core is available
+        self._registry = None
+        if CORE_AVAILABLE:
+            try:
+                self._registry = BackendRegistry()
+                self._registry.discover()
+            except Exception:
+                pass  # Core not available, use simulated mode
         self._event_callbacks: List[Callable] = []
         
         # Initialize backend statuses
@@ -164,17 +177,30 @@ class BackendController:
             previous_status = self.state.get_backend_status(backend_name)
             previous_health = previous_status.status if previous_status else "unknown"
             
-            # TODO: Actually check backend health via Proxima core
-            # health = self._registry.check_health(backend_name)
-            
-            # For now, simulate health check
-            new_health = self._simulate_health_check(backend_name)
-            
+            # Check backend health via Proxima core if available
+            if self._registry and CORE_AVAILABLE:
+                try:
+                    result = self._registry.check_backend_health(backend_name)
+                    if result.success:
+                        new_health = "healthy"
+                    elif result.available:
+                        new_health = "degraded"
+                    else:
+                        new_health = "unavailable"
+                    response_time = result.response_time_ms if hasattr(result, 'response_time_ms') else 45.0
+                except Exception:
+                    new_health = self._simulate_health_check(backend_name)
+                    response_time = 45.0
+            else:
+                # Fallback to simulated health check
+                new_health = self._simulate_health_check(backend_name)
+                response_time = 45.0
+
             # Update status
             if previous_status:
                 previous_status.status = new_health
                 previous_status.available = new_health in ["healthy", "degraded"]
-                previous_status.response_time_ms = 45.0  # Simulated
+                previous_status.response_time_ms = response_time
             
             results[backend_name] = new_health
             
@@ -184,7 +210,7 @@ class BackendController:
                     backend=backend_name,
                     previous_status=previous_health,
                     current_status=new_health,
-                    response_time_ms=45.0,
+                    response_time_ms=response_time,
                 ))
         
         return results

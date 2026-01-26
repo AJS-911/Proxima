@@ -27,19 +27,28 @@ def launch(
 
 def launch_tui(theme: str = "dark", screen: str = "dashboard") -> None:
     """Launch the Proxima TUI with the specified theme and screen."""
-    typer.echo("=" * 50)
-    typer.echo("  Proxima TUI - Coming Soon!")
-    typer.echo("=" * 50)
-    typer.echo("")
-    typer.echo("  The TUI is being rebuilt from scratch.")
-    typer.echo("  Please check back soon for the new interface.")
-    typer.echo("")
-    typer.echo("  In the meantime, you can use the CLI commands:")
-    typer.echo("    proxima run <circuit>")
-    typer.echo("    proxima benchmark <suite>")
-    typer.echo("    proxima config show")
-    typer.echo("")
-    raise typer.Exit(0)
+    try:
+        from proxima.tui.app import ProximaTUI
+        typer.echo("Starting Proxima TUI...")
+        app = ProximaTUI(theme=theme, initial_screen=screen)
+        app.run()
+    except ImportError as e:
+        typer.echo("=" * 50)
+        typer.echo("  TUI dependencies not installed!")
+        typer.echo("=" * 50)
+        typer.echo("")
+        typer.echo(f"  Error: {e}")
+        typer.echo("")
+        typer.echo("  Install TUI dependencies with:")
+        typer.echo("    pip install proxima-agent[ui]")
+        typer.echo("")
+        typer.echo("  Or install textual directly:")
+        typer.echo("    pip install textual rich")
+        typer.echo("")
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"Error launching TUI: {e}")
+        raise typer.Exit(1)
 
 
 @app.command("check")
@@ -54,15 +63,15 @@ def check_tui() -> None:
     for pkg, desc in dependencies.items():
         try:
             __import__(pkg)
-            typer.echo(f"✓ {pkg}: {desc}")
+            typer.echo(f"? {pkg}: {desc}")
         except ImportError:
-            typer.echo(f"✗ {pkg}: {desc} (not installed)")
+            typer.echo(f"? {pkg}: {desc} (not installed)")
             all_ok = False
 
     if all_ok:
-        typer.echo("\n✓ All TUI dependencies are available")
+        typer.echo("\n? All TUI dependencies are available")
         typer.echo("Run 'proxima ui' to launch")
     else:
-        typer.echo("\n✗ Some dependencies are missing")
-        typer.echo("Install with: pip install proxima-agent[tui]")
+        typer.echo("\n? Some dependencies are missing")
+        typer.echo("Install with: pip install proxima-agent[ui]")
         raise typer.Exit(1)

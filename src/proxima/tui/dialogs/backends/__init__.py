@@ -1,10 +1,11 @@
-"""Proxima TUI Backends Dialogs Package.
+"""Backend dialogs for enhanced TUI functionality."""
 
-Backend selection dialogs.
-"""
-
-from .backends import BackendsDialog
+from .comparison import BackendComparisonDialog
+from .metrics import BackendMetricsDialog  
+from .config import BackendConfigDialog
 
 __all__ = [
-    "BackendsDialog",
+    "BackendComparisonDialog",
+    "BackendMetricsDialog",
+    "BackendConfigDialog",
 ]

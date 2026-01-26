@@ -1,4 +1,4 @@
-"""Session Controller for Proxima TUI.
+﻿"""Session Controller for Proxima TUI.
 
 Handles session management, switching, and recovery.
 """
@@ -208,30 +208,8 @@ class SessionController:
         # Switch to the session
         self.switch_session(session_id)
         
-        # Attempt actual recovery via Proxima core
-        try:
-            # Load the saved session state
-            session_data = self.load_session(session_id)
-            if session_data:
-                # Restore application state from saved data
-                if "working_directory" in session_data:
-                    session.working_directory = session_data["working_directory"]
-                    self.state.working_directory = session_data["working_directory"]
-                if "task" in session_data:
-                    session.task = session_data["task"]
-                if "backend" in session_data:
-                    session.backend = session_data["backend"]
-                
-                # Update session status to active after successful recovery
-                session.status = "active"
-                session.last_activity = datetime.now()
-            else:
-                # No saved data found, just mark as active
-                session.status = "active"
-        except Exception as e:
-            # Recovery failed, mark session with error
-            session.status = "error"
-            return False
+        # TODO: Trigger actual recovery via Proxima core
+        # self._session_manager.recover(session_id)
         
         return True
     
@@ -253,75 +231,6 @@ class SessionController:
         
         del self._sessions[session_id]
         return True
-    
-    def save_session(self, session_id: str) -> bool:
-        """Save session state to persistent storage.
-        
-        Args:
-            session_id: ID of session to save
-        
-        Returns:
-            True if session was saved successfully
-        """
-        if session_id not in self._sessions:
-            return False
-        
-        session = self._sessions[session_id]
-        
-        try:
-            # Prepare session data for saving
-            session_data = {
-                "id": session.id,
-                "title": session.title,
-                "status": session.status,
-                "created_at": session.created_at.isoformat(),
-                "working_directory": session.working_directory,
-                "task": session.task,
-                "backend": session.backend,
-                "last_activity": session.last_activity.isoformat() if session.last_activity else None,
-            }
-            
-            # Store via session manager if available
-            if self._session_manager:
-                self._session_manager.save_state(session_id, session_data)
-            
-            return True
-        except Exception as e:
-            # Log error but don't fail
-            return False
-    
-    def load_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Load session state from persistent storage.
-        
-        Args:
-            session_id: ID of session to load
-        
-        Returns:
-            Session data dict if found, None otherwise
-        """
-        try:
-            # Attempt to load via session manager if available
-            if self._session_manager:
-                session_data = self._session_manager.load_state(session_id)
-                if session_data:
-                    return session_data
-            
-            # Fall back to in-memory session data if available
-            if session_id in self._sessions:
-                session = self._sessions[session_id]
-                return {
-                    "id": session.id,
-                    "title": session.title,
-                    "status": session.status,
-                    "working_directory": session.working_directory,
-                    "task": session.task,
-                    "backend": session.backend,
-                }
-            
-            return None
-        except Exception as e:
-            # Return None on any error
-            return None
     
     def update_session_activity(self) -> None:
         """Update the current session's last activity timestamp."""
@@ -346,3 +255,4 @@ class SessionController:
         """
         for callback in self._event_callbacks:
             callback(event)
+

@@ -1,4 +1,4 @@
-"""Execution screen for Proxima TUI.
+﻿"""Execution screen for Proxima TUI.
 
 Live execution monitoring with progress and controls.
 """
@@ -159,27 +159,94 @@ class ExecutionScreen(BaseScreen):
     
     def action_pause_execution(self) -> None:
         """Pause the current execution."""
-        # TODO: Implement via controller
-        self.notify("Pausing execution...")
+        if hasattr(self, '_controller') and self._controller:
+            try:
+                result = self._controller.pause()
+                if result:
+                    self.notify("⏸ Execution paused", severity="success")
+                    self._update_control_buttons("paused")
+                else:
+                    self.notify("Could not pause execution", severity="warning")
+            except Exception as e:
+                self.notify(f"Pause failed: {e}", severity="error")
+        else:
+            self.notify("⏸ Pause requested (controller not available)", severity="information")
     
     def action_resume_execution(self) -> None:
         """Resume the paused execution."""
-        # TODO: Implement via controller
-        self.notify("Resuming execution...")
+        if hasattr(self, '_controller') and self._controller:
+            try:
+                result = self._controller.resume()
+                if result:
+                    self.notify("▶ Execution resumed", severity="success")
+                    self._update_control_buttons("running")
+                else:
+                    self.notify("Could not resume execution", severity="warning")
+            except Exception as e:
+                self.notify(f"Resume failed: {e}", severity="error")
+        else:
+            self.notify("▶ Resume requested (controller not available)", severity="information")
     
     def action_abort_execution(self) -> None:
         """Abort the current execution."""
-        # TODO: Show confirmation dialog
-        self.notify("Aborting execution...")
+        if hasattr(self, '_controller') and self._controller:
+            try:
+                result = self._controller.abort()
+                if result:
+                    self.notify("⏹ Execution aborted", severity="warning")
+                    self._update_control_buttons("stopped")
+                else:
+                    self.notify("Could not abort execution", severity="warning")
+            except Exception as e:
+                self.notify(f"Abort failed: {e}", severity="error")
+        else:
+            self.notify("⏹ Abort requested (controller not available)", severity="information")
     
     def action_rollback(self) -> None:
-        """Rollback to the last checkpoint."""
-        if self.state.rollback_available:
-            # TODO: Show confirmation dialog
-            self.notify("Rolling back...")
+        """Rollback to last checkpoint."""
+        if hasattr(self, '_controller') and self._controller:
+            try:
+                result = self._controller.rollback()
+                if result:
+                    self.notify("↩ Rolled back to last checkpoint", severity="success")
+                else:
+                    self.notify("No checkpoint available for rollback", severity="warning")
+            except Exception as e:
+                self.notify(f"Rollback failed: {e}", severity="error")
         else:
-            self.notify("No checkpoint available", severity="warning")
+            self.notify("↩ Rollback requested (controller not available)", severity="information")
     
+    def _update_control_buttons(self, state: str) -> None:
+        """Update control button states based on execution state."""
+        try:
+            pause_btn = self.query_one("#btn-pause", Button) if self.query("#btn-pause") else None
+            resume_btn = self.query_one("#btn-resume", Button) if self.query("#btn-resume") else None
+            abort_btn = self.query_one("#btn-abort", Button) if self.query("#btn-abort") else None
+            
+            if state == "running":
+                if pause_btn:
+                    pause_btn.disabled = False
+                if resume_btn:
+                    resume_btn.disabled = True
+                if abort_btn:
+                    abort_btn.disabled = False
+            elif state == "paused":
+                if pause_btn:
+                    pause_btn.disabled = True
+                if resume_btn:
+                    resume_btn.disabled = False
+                if abort_btn:
+                    abort_btn.disabled = False
+            elif state == "stopped":
+                if pause_btn:
+                    pause_btn.disabled = True
+                if resume_btn:
+                    resume_btn.disabled = True
+                if abort_btn:
+                    abort_btn.disabled = True
+        except Exception:
+            pass  # Buttons may not exist in all screen modes
+
     def action_toggle_log(self) -> None:
         """Toggle the log panel visibility."""
         self._log_visible = not self._log_visible
@@ -233,9 +300,9 @@ class ExecutionInfoPanel(Static):
                 f"{self._state.current_backend or 'N/A'} ({self._state.current_simulator or 'N/A'})",
                 style=theme.fg_base,
             )
-            text.append(" • ", style=theme.border)
+            text.append(" â€¢ ", style=theme.border)
             text.append(f"{self._state.qubits} qubits", style=theme.fg_base)
-            text.append(" • ", style=theme.border)
+            text.append(" â€¢ ", style=theme.border)
             text.append(f"{self._state.shots} shots", style=theme.fg_base)
         else:
             text.append("No active execution", style=theme.fg_subtle)

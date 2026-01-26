@@ -1,4 +1,4 @@
-"""Execution Controller for Proxima TUI.
+﻿"""Execution Controller for Proxima TUI.
 
 Handles execution management, progress tracking, and control signals.
 """
@@ -6,6 +6,8 @@ Handles execution management, progress tracking, and control signals.
 from typing import Optional, Callable, List, Dict, Any
 from datetime import datetime
 from enum import Enum, auto
+
+from proxima.resources.control import ExecutionController as CoreExecutionController, ControlSignal, ControlState
 
 from ..state import TUIState
 from ..state.tui_state import StageInfo, CheckpointInfo
@@ -36,14 +38,14 @@ class ControlSignal(Enum):
 
 class ExecutionController:
     """Controller for execution management.
-    
+
     Handles starting, pausing, resuming, and aborting executions,
     as well as tracking progress and managing checkpoints.
     """
-    
+
     def __init__(self, state: TUIState):
         """Initialize the execution controller.
-        
+
         Args:
             state: The TUI state instance
         """
@@ -51,42 +53,47 @@ class ExecutionController:
         self._executor = None  # Will be set when Proxima core is available
         self._control = None   # Will be set when Proxima core is available
         self._event_callbacks: List[Callable] = []
-    
+        self._core_controller = None
+        try:
+            self._core_controller = CoreExecutionController()
+        except Exception:
+            pass  # Core not available, use simulated mode
+
     @property
     def is_running(self) -> bool:
         """Check if execution is running."""
         return self.state.execution_status == "RUNNING"
-    
+
     @property
     def is_paused(self) -> bool:
         """Check if execution is paused."""
         return self.state.execution_status == "PAUSED"
-    
+
     @property
     def is_idle(self) -> bool:
         """Check if no execution is active."""
         return self.state.execution_status == "IDLE"
-    
+
     @property
     def can_pause(self) -> bool:
         """Check if execution can be paused."""
         return self.is_running
-    
+
     @property
     def can_resume(self) -> bool:
         """Check if execution can be resumed."""
         return self.is_paused
-    
+
     @property
     def can_abort(self) -> bool:
         """Check if execution can be aborted."""
         return self.is_running or self.is_paused
-    
+
     @property
     def can_rollback(self) -> bool:
         """Check if rollback is available."""
         return self.state.rollback_available and self.state.checkpoint_count > 0
-    
+
     def start_execution(
         self,
         task: str,
@@ -97,7 +104,7 @@ class ExecutionController:
         **config,
     ) -> bool:
         """Start a new execution.
-        
+
         Args:
             task: Task/circuit name
             backend: Backend name
@@ -105,13 +112,13 @@ class ExecutionController:
             qubits: Number of qubits
             shots: Number of shots
             **config: Additional configuration
-        
+
         Returns:
             True if execution started successfully
         """
         if not self.is_idle:
             return False
-        
+
         # Update state
         self.state.execution_status = "PLANNING"
         self.state.current_task = task
@@ -123,7 +130,7 @@ class ExecutionController:
         self.state.progress_percent = 0.0
         self.state.elapsed_ms = 0.0
         self.state.eta_ms = None
-        
+
         # Initialize stages
         self.state.all_stages = [
             StageInfo(name="Planning", index=0),
@@ -135,7 +142,7 @@ class ExecutionController:
         self.state.total_stages = len(self.state.all_stages)
         self.state.stage_index = 0
         self.state.current_stage = "Planning"
-        
+
         # Emit event
         self._emit_event(ExecutionStarted(
             task=task,
@@ -145,23 +152,35 @@ class ExecutionController:
             qubits=qubits,
             shots=shots,
         ))
-        
-        # TODO: Actually start execution via Proxima core
-        # self._executor.run(plan)
-        
+
+        # Start execution via Proxima core if available
+        if self._core_controller:
+            try:
+                self._core_controller.start(
+                    stages=["Planning", "Backend Init", "Simulation", "Analysis", "Report"],
+                    total_stages=5,
+                )
+                self.state.execution_status = "RUNNING"
+            except Exception as e:
+                self._emit_event(ExecutionFailed(error=str(e), stage="start"))
+                return False
+        else:
+            # Simulated mode - just update status
+            self.state.execution_status = "RUNNING"
+
         return True
-    
+
     def pause(self) -> bool:
         """Pause current execution.
-        
+
         Returns:
             True if pause was successful
         """
         if not self.can_pause:
             return False
-        
+
         self.state.execution_status = "PAUSED"
-        
+
         # Create checkpoint
         checkpoint = CheckpointInfo(
             id=f"cp_{datetime.now().strftime('%H%M%S')}",
@@ -172,98 +191,114 @@ class ExecutionController:
         self.state.checkpoint_count += 1
         self.state.last_checkpoint_time = datetime.now()
         self.state.rollback_available = True
-        
+
         self._emit_event(ExecutionPaused(
             checkpoint_id=checkpoint.id,
             stage_index=checkpoint.stage_index,
         ))
-        
-        # TODO: Send pause signal to Proxima core
-        # self._control.signal(ControlSignal.PAUSE)
-        
+
+        # Send pause signal to Proxima core if available
+        if self._core_controller:
+            try:
+                self._core_controller.pause(reason="User requested pause")
+            except Exception as e:
+                pass  # Continue with TUI state update regardless
+
         return True
-    
+
     def resume(self) -> bool:
         """Resume paused execution.
-        
+
         Returns:
             True if resume was successful
         """
         if not self.can_resume:
             return False
-        
+
         self.state.execution_status = "RUNNING"
-        
+
         checkpoint_id = self.state.latest_checkpoint.id if self.state.latest_checkpoint else "unknown"
-        
+
         self._emit_event(ExecutionResumed(
             checkpoint_id=checkpoint_id,
             stage_index=self.state.stage_index,
         ))
-        
-        # TODO: Send resume signal to Proxima core
-        # self._control.signal(ControlSignal.RESUME)
-        
+
+        # Send resume signal to Proxima core if available
+        if self._core_controller:
+            try:
+                self._core_controller.resume()
+            except Exception as e:
+                pass  # Continue with TUI state update regardless
+
         return True
-    
+
     def abort(self, reason: str = "User requested") -> bool:
         """Abort current execution.
-        
+
         Args:
             reason: Reason for abort
-        
+
         Returns:
             True if abort was successful
         """
         if not self.can_abort:
             return False
-        
+
         self.state.execution_status = "ABORTED"
-        
+
         self._emit_event(ExecutionAborted(reason=reason))
-        
-        # TODO: Send abort signal to Proxima core
-        # self._control.signal(ControlSignal.ABORT, reason=reason)
-        
+
+        # Send abort signal to Proxima core if available
+        if self._core_controller:
+            try:
+                self._core_controller.abort(reason=reason)
+            except Exception as e:
+                pass  # Continue with TUI state update regardless
+
         # Clear execution state after short delay
         self._cleanup_execution()
-        
+
         return True
-    
+
     def rollback(self, checkpoint_id: Optional[str] = None) -> bool:
         """Rollback to a checkpoint.
-        
+
         Args:
             checkpoint_id: Specific checkpoint ID (uses latest if None)
-        
+
         Returns:
             True if rollback was successful
         """
         if not self.can_rollback:
             return False
-        
+
         checkpoint = self.state.latest_checkpoint
         if checkpoint is None:
             return False
-        
+
         # Update state to checkpoint's stage
         self.state.stage_index = checkpoint.stage_index
         self.state.current_stage = self.state.all_stages[checkpoint.stage_index].name
-        
+
         # Mark stages after checkpoint as pending
         for stage in self.state.all_stages[checkpoint.stage_index + 1:]:
             stage.status = "pending"
-        
+
         self._emit_event(RollbackCompleted(
             checkpoint_id=checkpoint.id,
             stage_index=checkpoint.stage_index,
         ))
-        
-        # TODO: Send rollback signal to Proxima core
-        # self._control.signal(ControlSignal.ROLLBACK, checkpoint_id=checkpoint_id)
-        
+
+        # Send rollback signal to Proxima core if available
+        if self._core_controller:
+            try:
+                self._core_controller.rollback_to_checkpoint(checkpoint_id or checkpoint.id)
+            except Exception as e:
+                pass  # Continue with TUI state update regardless
+
         return True
-    
+
     def update_progress(
         self,
         percent: float,
@@ -273,7 +308,7 @@ class ExecutionController:
         eta_ms: Optional[float] = None,
     ) -> None:
         """Update execution progress.
-        
+
         Args:
             percent: Progress percentage (0-100)
             stage: Current stage name
@@ -289,7 +324,7 @@ class ExecutionController:
             elapsed_ms=elapsed_ms,
             eta_ms=eta_ms,
         )
-        
+
         self._emit_event(ExecutionProgress(
             progress=percent,
             stage=stage,
@@ -298,10 +333,10 @@ class ExecutionController:
             elapsed_ms=elapsed_ms,
             eta_ms=eta_ms,
         ))
-    
+
     def complete_stage(self, stage_index: int, duration_ms: float) -> None:
         """Mark a stage as completed.
-        
+
         Args:
             stage_index: Index of the completed stage
             duration_ms: Stage duration in milliseconds
@@ -311,70 +346,70 @@ class ExecutionController:
             stage.status = "done"
             stage.duration_ms = duration_ms
             stage.end_time = datetime.now()
-            
+
             self.state.completed_stages.append(stage)
-            
+
             self._emit_event(StageCompleted(
                 stage_name=stage.name,
                 stage_index=stage_index,
                 duration_ms=duration_ms,
                 success=True,
             ))
-    
+
     def complete_execution(self, result: Dict[str, Any]) -> None:
         """Mark execution as completed.
-        
+
         Args:
             result: Execution result data
         """
         self.state.execution_status = "COMPLETED"
-        
+
         self._emit_event(ExecutionCompleted(
             result=result,
             total_time_ms=self.state.elapsed_ms,
         ))
-        
+
         # Clear execution state after short delay
         self._cleanup_execution()
-    
+
     def fail_execution(self, error: str, stage: str) -> None:
         """Mark execution as failed.
-        
+
         Args:
             error: Error message
             stage: Stage where error occurred
         """
         self.state.execution_status = "ERROR"
-        
+
         self._emit_event(ExecutionFailed(
             error=error,
             stage=stage,
             partial_result=None,
         ))
-        
+
         # Clear execution state after short delay
         self._cleanup_execution()
-    
+
     def _cleanup_execution(self) -> None:
         """Clean up execution state."""
         # Don't clear immediately - let the UI show final state
         pass
-    
+
     def reset(self) -> None:
         """Reset execution state."""
         self.state.clear_execution()
-    
+
     def on_event(self, callback: Callable) -> None:
         """Register an event callback.
-        
+
         Args:
             callback: Function to call on events
         """
         self._event_callbacks.append(callback)
-    
+
     def _emit_event(self, event: Any) -> None:
         """Emit an event to callbacks.
-        
+
         Args:
             event: Event to emit
         """

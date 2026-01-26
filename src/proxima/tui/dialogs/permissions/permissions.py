@@ -28,14 +28,14 @@ class PermissionRequest:
     def get_icon(self) -> str:
         """Get the appropriate icon for this action."""
         icons = {
-            "file_read": ICONS.get("file", "📄"),
-            "file_write": ICONS.get("edit", "✏️"),
-            "file_delete": "🗑️",
-            "command": ICONS.get("terminal", "💻"),
-            "network": "🌐",
-            "api_call": ICONS.get("cloud", "☁️"),
+            "file_read": ICONS.get("file", "ðŸ“„"),
+            "file_write": ICONS.get("edit", "âœï¸"),
+            "file_delete": "ðŸ—‘ï¸",
+            "command": ICONS.get("terminal", "ðŸ’»"),
+            "network": "ðŸŒ",
+            "api_call": ICONS.get("cloud", "â˜ï¸"),
         }
-        return icons.get(self.action_type, "❓")
+        return icons.get(self.action_type, "â“")
 
 
 class PermissionsDialog(ModalScreen):
@@ -109,6 +109,10 @@ class PermissionsDialog(ModalScreen):
         background: $primary-darken-2;
     }
     
+    PermissionsDialog .btn-allow-task {
+        background: $warning-darken-2;
+    }
+
     PermissionsDialog .btn-deny {
         background: $error-darken-2;
     }
@@ -116,8 +120,9 @@ class PermissionsDialog(ModalScreen):
     
     BINDINGS = [
         ("escape", "deny", "Deny"),
-        ("a", "allow", "Allow"),
+        ("a", "allow", "Allow Once"),
         ("s", "allow_session", "Allow for Session"),
+        ("t", "allow_task", "Allow for Task"),
         ("d", "deny", "Deny"),
     ]
     
@@ -178,6 +183,12 @@ class PermissionsDialog(ModalScreen):
                     variant="primary",
                 )
                 yield Button(
+                    "[T] Allow Task",
+                    id="btn-allow-task",
+                    classes="btn btn-allow-task",
+                    variant="warning",
+                )
+                yield Button(
                     "[D] Deny",
                     id="btn-deny",
                     classes="btn btn-deny",
@@ -189,9 +200,12 @@ class PermissionsDialog(ModalScreen):
         self.dismiss("allow")
     
     def action_allow_session(self) -> None:
-        """Allow this action for the session."""
+        ""Allow this action for the session.""
         self.dismiss("allow_session")
-    
+
+    def action_allow_task(self) -> None:
+        ""Allow this action for the current task only.""
+        self.dismiss("allow_task")
     def action_deny(self) -> None:
         """Deny this action."""
         self.dismiss("deny")
@@ -204,6 +218,8 @@ class PermissionsDialog(ModalScreen):
             self.action_allow()
         elif button_id == "btn-allow-session":
             self.action_allow_session()
+        elif button_id == "btn-allow-task":
+            self.action_allow_task()
         elif button_id == "btn-deny":
             self.action_deny()
 
@@ -224,10 +240,10 @@ class RiskIndicator(Static):
         text.append("Risk Level: ", style=theme.fg_muted)
         
         if self.risk_level == "low":
-            text.append("● LOW", style=f"bold {theme.success}")
+            text.append("â— LOW", style=f"bold {theme.success}")
         elif self.risk_level == "medium":
-            text.append("● MEDIUM", style=f"bold {theme.warning}")
+            text.append("â— MEDIUM", style=f"bold {theme.warning}")
         else:
-            text.append("● HIGH", style=f"bold {theme.error}")
+            text.append("â— HIGH", style=f"bold {theme.error}")
         
         return text
