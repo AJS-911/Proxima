@@ -24,25 +24,13 @@
 
 ### How to Launch Proxima TUI
 
-There are **two ways** to launch the Proxima TUI:
-
-**Method 1 - Using the CLI command (Recommended)**
-
 Open your terminal (Command Prompt or PowerShell on Windows) and type:
 
 ```bash
 proxima ui
 ```
 
-**Method 2 - Using Python directly**
-
-Navigate to the Proxima directory and run:
-
-```bash
-python run_tui.py
-```
-
-Press **Enter** after either command. The TUI will open in full-screen mode showing a beautiful interface with colorful text and buttons.
+Press **Enter**. The TUI will open in full-screen mode showing a beautiful interface with colorful text and buttons.
 
 **What you'll see:**
 - A title bar at the top saying "Proxima - Quantum Simulation Orchestration"
@@ -128,12 +116,8 @@ Six clickable buttons for common tasks:
 - Shows results from your previous simulations
 
 **[4] Manage Sessions**
-- Opens the **Sessions Dialog** - a complete session management interface
-- **Search sessions**: Type to filter sessions by name
-- **Create new session**: Start a fresh workspace for experiments
-- **Switch sessions**: Click any session to make it active
-- **Delete sessions**: Remove old sessions you no longer need
-- **Export sessions**: Save session data for backup or sharing
+- See all your work sessions
+- Switch between different projects
 
 **[5] Configure**
 - Opens Settings screen
@@ -563,90 +547,36 @@ Auto-save Results:       [ON]  /  [ ]
 - **[ON]**: Results saved automatically (recommended)
 - **[ ]** (OFF): You must manually save
 
-#### 2. AI Assistant Settings
+#### 2. LLM Configuration (AI Features)
 
-**LLM** = Large Language Model (the AI that helps explain simulation results)
+**LLM** = Large Language Model (the AI that helps explain things)
 
-**AI Mode Selector**
+**Provider**
 ```
-AI Mode:          [Disabled (No AI)        ▼]
+Provider:                Ollama (Local)
 ```
+- **What it is**: Which AI service to use
+- **Options**:
+  - **Ollama (Local)**: AI runs on your computer (free, private)
+  - **OpenAI**: Uses ChatGPT (requires API key, costs money)
+  - **Anthropic**: Uses Claude (requires API key, costs money)
+  - **None**: Disable AI features
 
-Choose one of four options from the dropdown:
-
-| Option | Description |
-|--------|-------------|
-| **Disabled (No AI)** | No AI features - simulations run without AI explanations |
-| **Local LLM (Free, Private)** | Uses Ollama running on your computer - completely free and private |
-| **OpenAI API (Paid)** | Uses OpenAI's GPT models - requires API key and costs money per use |
-| **Anthropic API (Paid)** | Uses Anthropic's Claude models - requires API key and costs money per use |
-
-**When you select an option, only the relevant settings appear:**
-
----
-
-**Option: Local LLM (Ollama)**
-
-When you select "Local LLM (Free, Private)", you'll see:
-
+**Model**
 ```
-Ollama URL:       [http://localhost:11434      ]
-Model Name:       [llama3                       ]
-           [Test Connection]
+Model:                   [llama2  ]
 ```
+- **What it is**: Which specific AI model to use
+- **How to change**: Type the model name
+- **For Ollama**: llama2, llama3, mistral, etc.
 
-- **Ollama URL**: Where your local Ollama server is running (default: http://localhost:11434)
-- **Model Name**: Which model to use (llama3, mistral, codellama, etc.)
-- **Test Connection**: Click to verify Ollama is running and accessible
-
-**Requirements**: Install Ollama from https://ollama.ai and run `ollama pull llama3`
-
----
-
-**Option: OpenAI API**
-
-When you select "OpenAI API (Paid)", you'll see:
-
+**Enable Thinking**
 ```
-API Key:          [sk-...                       ] (hidden)
-Model:            [GPT-4o Mini (Cheaper)   ▼]
-           [Verify API Key]
+Enable Thinking:         [ ]  /  [ON]
 ```
-
-- **API Key**: Your OpenAI API key (starts with "sk-")
-- **Model**: Choose from GPT-4o, GPT-4o Mini, GPT-4 Turbo, or GPT-3.5 Turbo
-- **Verify API Key**: Click to test if your key is valid
-
-**Get an API key**: https://platform.openai.com/api-keys
-
----
-
-**Option: Anthropic API**
-
-When you select "Anthropic API (Paid)", you'll see:
-
-```
-API Key:          [sk-ant-...                   ] (hidden)
-Model:            [Claude 3.5 Sonnet (Recommended) ▼]
-           [Verify API Key]
-```
-
-- **API Key**: Your Anthropic API key (starts with "sk-ant-")
-- **Model**: Choose from Claude 3.5 Sonnet, Claude 3.5 Haiku, or Claude 3 Opus
-- **Verify API Key**: Click to test if your key is valid
-
-**Get an API key**: https://console.anthropic.com/
-
----
-
-**Which AI option should you choose?**
-
-| Your Situation | Recommended Option |
-|----------------|-------------------|
-| Just learning, want free option | **Local LLM** with Ollama |
-| Have powerful computer, want privacy | **Local LLM** with Ollama |
-| Want best quality, can pay | **OpenAI** (GPT-4o) or **Anthropic** (Claude 3.5 Sonnet) |
-| Don't need AI explanations | **Disabled** |
+- **What it is**: Shows AI's thought process before answers
+- **[ON]**: See how AI reasoned (slower but more transparent)
+- **[ ]** (OFF): Just get the answer (faster)
 
 #### 3. Display Settings
 
