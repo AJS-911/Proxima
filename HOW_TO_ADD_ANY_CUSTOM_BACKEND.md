@@ -1,357 +1,298 @@
-# How to Add Any Custom Backend Through TUI
+# Universal External Backend Integration System for Proxima
 
-**Comprehensive Implementation Guide for AI Agents**  
-*Version: 1.0*  
-*Last Updated: January 27, 2026*  
+**Comprehensive AI-Implementable Specification**  
+*Version: 2.0 - External Backend Integration with AI-Powered Code Adaptation*  
+*Last Updated: January 28, 2026*  
 *Target: AI Implementation Agents*
 
 ---
 
 ## 📋 Table of Contents
 
-1. [Overview](#overview)
-2. [Architecture Design](#architecture-design)
-3. [Phase 1: Backend Addition Wizard](#phase-1-backend-addition-wizard)
-4. [Phase 2: Backend Configuration Interface](#phase-2-backend-configuration-interface)
-5. [Phase 3: Code Generation System](#phase-3-code-generation-system)
-6. [Phase 4: Testing & Validation Interface](#phase-4-testing--validation-interface)
-7. [Phase 5: Integration & Deployment](#phase-5-integration--deployment)
-8. [Complete File Structure](#complete-file-structure)
-9. [Implementation Checklist](#implementation-checklist)
-10. [Testing Procedures](#testing-procedures)
+1. [Executive Summary](#executive-summary)
+2. [System Architecture](#system-architecture)
+3. [Phase 0: LLM Configuration & Setup](#phase-0-llm-configuration--setup)
+4. [Phase 1: Backend Source Discovery](#phase-1-backend-source-discovery)
+5. [Phase 2: Backend Import & Download](#phase-2-backend-import--download)
+6. [Phase 3: AI-Powered Code Analysis](#phase-3-ai-powered-code-analysis)
+7. [Phase 4: Automatic Adapter Generation](#phase-4-automatic-adapter-generation)
+8. [Phase 5: Code Modification Planning](#phase-5-code-modification-planning)
+9. [Phase 6: Change Management & Approval](#phase-6-change-management--approval)
+10. [Phase 7: Testing & Validation](#phase-7-testing--validation)
+11. [Phase 8: Deployment & Integration](#phase-8-deployment--integration)
+12. [TUI Navigation Structure](#tui-navigation-structure)
+13. [Complete File Specifications](#complete-file-specifications)
+14. [Implementation Checklist](#implementation-checklist)
+15. [Testing Procedures](#testing-procedures)
 
 ---
 
-## Overview
+## Executive Summary
 
 ### Purpose
 
-This document provides a complete, AI-implementable specification for adding an **"AI-Powered Custom Backend Addition System"** to the Proxima TUI. This system combines a traditional step-by-step wizard with **AI-assisted conversational interface** to allow users to add new quantum simulator backends through natural language descriptions and intelligent code generation.
+This document provides a **complete, AI-implementable specification** for enabling Proxima to integrate **any well-maintained external quantum backend** through intelligent AI-powered code adaptation.
 
-### Design Philosophy
+### Core Capabilities
 
-**Inspiration Sources:**
-- **Crush Agent**: 
-  - Multi-model LLM support (OpenAI, Anthropic, local models)
-  - Conversational interface with context awareness
-  - JSON-based configuration with environment variable support
-  - Beautiful terminal UI with command palette
-  - Model switching and provider management
-  
-- **OpenCode Agent**: 
-  - Interactive wizards with AI assistance
-  - Code generation and validation
-  - Built-in agent for complex tasks
-  - Terminal-first design philosophy
-  - LSP integration for intelligent suggestions
+**1. Universal Backend Discovery**
+- Scan local directories (on any device/drive)
+- Browse GitHub repositories
+- Search PyPI packages
+- Connect to remote APIs/servers
+- Support for: Python libraries, command-line tools, REST APIs, gRPC services
 
-**Key Principles:**
-1. **Zero-Code Experience**: Users should not need to write Python code manually
-2. **AI-Assisted Creation**: Use LLM to generate backend code from natural language descriptions
-3. **Dual Mode Interface**: Traditional wizard OR conversational AI mode
-4. **Guided Process**: Step-by-step wizard with clear instructions
-5. **Validation at Every Step**: Real-time feedback and error prevention
-6. **Smart Defaults**: AI-powered suggestions and intelligent pre-filling
-7. **Reversible Actions**: Ability to go back and modify choices
-8. **Beautiful UI**: Clean, professional terminal interface with proper navigation
-9. **Model Flexibility**: Support for local LLMs (Ollama, LM Studio) and API-based models (OpenAI, Anthropic)
-10. **Context-Aware**: Remember previous backends and suggest improvements
+**2. AI-Powered Code Understanding**
+- Automatically analyze backend structure
+- Identify APIs, classes, methods
+- Detect capabilities (qubits, gates, features)
+- Understand data formats and protocols
+- Extract documentation automatically
 
-### User Experience Flow
+**3. Intelligent Code Adaptation**
+- Auto-generate Proxima adapter classes
+- Create result normalizers
+- **Modify backend code** when needed (with approval)
+- Handle dependency conflicts
+- Generate bridge code for incompatible interfaces
 
-**Mode 1: Traditional Wizard Flow**
-```
-Dashboard → Backends Screen → [Add Backend] Button → [Choose Mode]
-    ↓
-[Wizard Mode Selected]
-    ↓
-Backend Addition Wizard (7 Steps)
-    ↓
-Step 1: Welcome & Backend Type Selection
-Step 2: Basic Information Input
-Step 3: Capabilities Configuration
-Step 4: Gate Mapping Configuration
-Step 5: Code Template Selection & Customization
-Step 6: Testing & Validation
-Step 7: Review & Deployment
-    ↓
-Backend Added Successfully → Backend Management Screen
-```
+**4. Complete Change Management**
+- **Track every modification** with detailed history
+- **Visual diff viewer** for all changes
+- **Undo/Redo** any change at any time
+- **Snapshot system** to save states
+- **Keep or revert** changes via TUI buttons
+- **Export patches** for sharing modifications
 
-**Mode 2: AI-Assisted Conversational Flow**
-```
-Dashboard → Backends Screen → [Add Backend] Button → [Choose Mode]
-    ↓
-[AI Assistant Mode Selected]
-    ↓
-LLM Configuration & Model Selection
-    ↓
-Conversational Interface:
-  User: "I want to add a Python-based quantum simulator..."
-  AI: Analyzes description → Asks clarifying questions → Generates configuration
-    ↓
-AI generates backend code automatically
-    ↓
-Review & Refinement (User can chat to modify)
-    ↓
-Testing & Validation (AI explains results)
-    ↓
-Deployment
-    ↓
-Backend Added Successfully → Backend Management Screen
-```
+**5. Professional TUI Experience**
+- 8-phase wizard with clear navigation
+- Real-time AI feedback
+- Beautiful diff visualization
+- One-click undo/redo
+- Change approval workflow
+- Progress tracking throughout
 
-**Mode 3: Hybrid Flow**
-```
-Use AI assistance at any step of the wizard
-  - Ask AI to fill current step
-  - Get AI suggestions for capabilities
-  - Generate code snippets with AI
-  - Debug errors with AI help
-```
+### Key Features
+
+✅ **Universal Backend Support**: Import from local, GitHub, PyPI, remote  
+✅ **AI Code Analysis**: Understands any backend structure automatically  
+✅ **Smart Adaptation**: Generates adapters + modifies code intelligently  
+✅ **Full Change Control**: Track, diff, approve, undo, redo all changes  
+✅ **Multi-Source Import**: Local dirs, Git repos, packages, APIs  
+✅ **LLM Flexibility**: OpenAI, Anthropic, Ollama, LM Studio support  
+✅ **Non-Destructive**: Original code always preserved  
+✅ **Change History**: Complete audit trail of all modifications  
+✅ **TUI Navigation**: Clear phases, steps, buttons, options  
+✅ **Production Ready**: Comprehensive error handling and validation
+
+### Design Principles
+
+1. **Non-Invasive**: Original backend code is NEVER modified without explicit approval
+2. **Fully Reversible**: ALL changes can be undone with one click
+3. **Transparent**: Show EXACTLY what will change, line by line, with diffs
+4. **AI-Intelligent**: Let AI analyze code structure and plan adaptations
+5. **User Control**: User approves EVERY code modification before applying
+6. **Source Agnostic**: Works with backends from any source or format
+7. **Beautiful UX**: Professional TUI with intuitive navigation
+8. **Safe Testing**: Sandbox execution before deployment
+9. **Well Documented**: Auto-generate integration documentation
 
 ---
 
-## Architecture Design
+## System Architecture
 
-### LLM Integration Architecture
+### High-Level Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      Proxima TUI Interface                      │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │   External Backend Integration Wizard (8 Phases)         │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└──────────────────────┬──────────────────────────────────────────┘
+                       │
+         ┌─────────────┴────────────────┐
+         │                              │
+    ┌────▼────┐                   ┌─────▼─────┐
+    │ Backend │                   │    AI     │
+    │Discovery│                   │  Engine   │
+    │ Engine  │                   │           │
+    └────┬────┘                   └─────┬─────┘
+         │                              │
+         │  ┌───────────────────────────┘
+         │  │
+    ┌────▼──▼──────┐
+    │   Backend    │
+    │   Analyzer   │
+    │  (AI-Powered)│
+    └────┬─────────┘
+         │
+    ┌────▼─────────┐
+    │   Adapter    │
+    │  Generator   │
+    │  (AI-Powered)│
+    └────┬─────────┘
+         │
+    ┌────▼─────────┐
+    │    Change    │
+    │  Management  │
+    │    System    │
+    └────┬─────────┘
+         │
+    ┌────▼─────────┐
+    │  Integration │
+    │   & Testing  │
+    └──────────────┘
+```
+
+### Directory Structure
 
 ```
 src/proxima/
-├── llm/                                # NEW - LLM integration layer
+├── integration/                        # NEW - Backend integration system
+│   ├── __init__.py
+│   ├── discovery/                      # Backend discovery engines
+│   │   ├── __init__.py
+│   │   ├── local_discovery.py         # Local directory scanning
+│   │   ├── github_discovery.py        # GitHub repo integration
+│   │   ├── pypi_discovery.py          # PyPI package search
+│   │   ├── remote_discovery.py        # Remote API/server backends
+│   │   └── base_discovery.py          # Base discovery interface
+│   │
+│   ├── analyzer/                       # AI-powered code analysis
+│   │   ├── __init__.py
+│   │   ├── backend_analyzer.py        # Main analysis engine
+│   │   ├── capability_detector.py     # Detect backend capabilities
+│   │   ├── dependency_analyzer.py     # Analyze dependencies
+│   │   └── api_extractor.py           # Extract backend API
+│   │
+│   ├── adapter/                        # Adapter generation
+│   │   ├── __init__.py
+│   │   ├── adapter_generator.py       # Generate adapter code
+│   │   ├── normalizer_generator.py    # Generate normalizers
+│   │   └── template_engine.py         # Code templates
+│   │
+│   ├── modification/                   # Code modification engine
+│   │   ├── __init__.py
+│   │   ├── code_modifier.py           # AI-powered code modification
+│   │   ├── ast_transformer.py         # AST-based transformations
+│   │   └── patch_generator.py         # Generate code patches
+│   │
+│   ├── changes/                        # Change management
+│   │   ├── __init__.py
+│   │   ├── change_tracker.py          # Track all modifications
+│   │   ├── diff_viewer.py             # Visualize diffs
+│   │   ├── undo_manager.py            # Undo/redo functionality
+│   │   └── snapshot_manager.py        # Code snapshots
+│   │
+│   └── testing/                        # Integration testing
+│       ├── __init__.py
+│       ├── sandbox.py                 # Sandboxed execution
+│       ├── validator.py               # Validation engine
+│       └── test_generator.py          # Auto-generate tests
+│
+├── llm/                                # LLM integration
 │   ├── __init__.py
 │   ├── providers.py                   # LLM provider management
-│   ├── models.py                      # Model configuration
-│   ├── backend_agent.py               # Specialized agent for backend creation
-│   ├── prompts/                       # Prompt templates
-│   │   ├── backend_generation.txt
-│   │   ├── code_refinement.txt
-│   │   ├── capability_suggestion.txt
-│   │   └── error_debugging.txt
-│   └── config/
-│       ├── providers.json             # LLM provider configs
-│       └── models.json                # Available models
-│
-├── tui/
-│   ├── screens/
-│   │   ├── backends.py                # Enhanced with "Add Backend" & mode selection
-│   │   ├── backend_wizard.py          # Traditional wizard
-│   │   ├── backend_ai_chat.py         # NEW - AI conversational interface
-│   │   └── llm_settings.py            # NEW - LLM configuration screen
-│   │
-│   ├── dialogs/
-│   │   ├── backend_wizard/            # Traditional wizard dialogs
-│   │   └── backend_ai_assistant/      # NEW - AI assistant dialogs
-│   │       ├── __init__.py
-│   │       ├── chat_interface.py      # Chat UI component
-│   │       ├── model_selector.py      # Model selection dialog
-│   │       ├── provider_config.py     # Provider configuration
-│   │       └── ai_suggestions.py      # AI suggestion display
-│   │
-│   ├── widgets/
-│   │   ├── chat_widget.py             # NEW - Chat message display
-│   │   ├── model_status.py            # NEW - Model status indicator
-│   │   └── ai_thinking.py             # NEW - AI processing indicator
-│
-└── config/
-    └── llm_config.yaml                # NEW - LLM configuration
-```
-
-### Component Structure
-
-```
-src/proxima/tui/
-├── screens/
-│   ├── backends.py                    # Enhanced with "Add Backend" button & mode selection
-│   ├── backend_wizard.py              # Traditional wizard screen
-│   └── backend_ai_chat.py             # NEW - AI conversational interface
-├── dialogs/
-│   ├── backend_wizard/                # NEW - Wizard dialog modules
+│   ├── agents/
 │   │   ├── __init__.py
-│   │   ├── step_welcome.py            # Step 1: Welcome screen
-│   │   ├── step_basic_info.py         # Step 2: Basic info form
-│   │   ├── step_capabilities.py       # Step 3: Capabilities selection
-│   │   ├── step_gate_mapping.py       # Step 4: Gate configuration
-│   │   ├── step_code_template.py      # Step 5: Template selection
-│   │   ├── step_testing.py            # Step 6: Testing interface
-│   │   ├── step_review.py             # Step 7: Review & deploy
-│   │   └── wizard_state.py            # Shared state management
-│   └── backend_dialogs.py             # Enhanced existing dialogs
-├── controllers/
-│   └── backend_generator.py           # NEW - Code generation logic
-├── widgets/
-│   └── wizard_navigation.py           # NEW - Navigation component
-└── utils/
-    └── backend_templates.py           # NEW - Template library
+│   │   ├── analysis_agent.py          # Code analysis agent
+│   │   ├── adaptation_agent.py        # Code adaptation agent
+│   │   └── debug_agent.py             # Debugging agent
+│   └── prompts/
+│       ├── analysis_prompts.py
+│       ├── adaptation_prompts.py
+│       └── debugging_prompts.py
+│
+└── tui/
+    ├── screens/
+    │   ├── backend_integration/        # NEW - Integration screens
+    │   │   ├── __init__.py
+    │   │   ├── llm_config_screen.py    # Phase 0: LLM configuration
+    │   │   ├── discovery_screen.py     # Phase 1: Backend discovery
+    │   │   ├── import_screen.py        # Phase 2: Import/Download
+    │   │   ├── analysis_screen.py      # Phase 3: AI analysis
+    │   │   ├── adaptation_screen.py    # Phase 4: Adapter generation
+    │   │   ├── modification_screen.py  # Phase 5: Code modification
+    │   │   ├── changes_screen.py       # Phase 6: Change management
+    │   │   ├── testing_screen.py       # Phase 7: Testing
+    │   │   └── deployment_screen.py    # Phase 8: Deployment
+    │   │
+    │   └── backends.py                 # MODIFY: Add integration button
+    │
+    ├── dialogs/
+    │   └── integration/                # Integration dialogs
+    │       ├── __init__.py
+    │       ├── source_selector.py      # Select backend source
+    │       ├── github_browser.py       # Browse GitHub repos
+    │       ├── diff_viewer.py          # View code diffs
+    │       ├── change_approval.py      # Approve/reject changes
+    │       └── llm_config.py           # LLM configuration
+    │
+    └── widgets/
+        └── integration/                # Integration widgets
+            ├── __init__.py
+            ├── file_tree.py            # File tree viewer
+            ├── code_diff.py            # Code diff widget
+            ├── change_list.py          # List of changes
+            ├── progress_tracker.py     # Multi-phase progress
+            └── ai_status.py            # AI processing status
 
-src/proxima/backends/
-└── _generated/                        # NEW - Auto-generated backends
-    └── .gitignore                     # Ignore generated files
+configs/
+└── integration/
+    ├── discovery_config.yaml           # Discovery settings
+    ├── adaptation_rules.yaml           # Adaptation rules
+    └── llm_config.yaml                 # LLM settings
+
+external_backends/                      # NEW - External backend storage
+├── .gitignore                         # Ignore external code
+├── sources/                            # Original backend sources
+│   ├── <backend_name>/
+│   │   ├── original/                  # Unmodified source
+│   │   ├── modified/                  # Modified source
+│   │   └── metadata.json              # Backend metadata
+│   └── ...
+│
+├── adapters/                           # Generated adapters
+│   ├── <backend_name>_adapter.py
+│   └── ...
+│
+└── snapshots/                          # Code snapshots
+    └── <backend_name>/
+        ├── snapshot_001.json
+        └── ...
 ```
 
 ### Data Flow
 
 ```
-User Input (TUI Forms)
+User Input (Source Selection)
     ↓
-Wizard State Manager (wizard_state.py)
+Discovery Engine (Local/GitHub/PyPI/Remote)
     ↓
-Validation Engine (Per-step validators)
+Backend Download/Clone
     ↓
-Code Generator (backend_generator.py)
+AI Analysis Agent (Analyze structure, capabilities, API)
     ↓
-Template Engine (backend_templates.py)
+Capability Detection & Dependency Analysis
     ↓
-File System Writer (Creates adapter, normalizer, __init__.py)
+Adaptation Planning (What needs to change?)
     ↓
-Registry Integration (Auto-registers backend)
+AI Adapter Generation (Create adapter classes)
     ↓
-Testing Interface (Validates functionality)
+AI Code Modification (Modify backend if needed)
     ↓
-Success Notification
-```
-
-### LLM Provider Configuration
-
-**Configuration File: `config/llm_config.yaml`**
-
-```yaml
-# LLM Configuration for Backend Creation
-llm:
-  # Default provider and model
-  default_provider: "openai"  # or "anthropic", "ollama", "local"
-  default_model: "gpt-4"
-  
-  # Enable/disable AI features
-  enabled: true
-  ai_wizard_mode: true
-  ai_suggestions: true
-  
-  # Provider configurations
-  providers:
-    openai:
-      type: "openai"
-      api_key_env: "OPENAI_API_KEY"  # Read from environment variable
-      base_url: "https://api.openai.com/v1"
-      models:
-        - id: "gpt-4"
-          name: "GPT-4"
-          context_window: 128000
-          cost_per_1m_tokens: 30
-        - id: "gpt-3.5-turbo"
-          name: "GPT-3.5 Turbo"
-          context_window: 16000
-          cost_per_1m_tokens: 1.5
-    
-    anthropic:
-      type: "anthropic"
-      api_key_env: "ANTHROPIC_API_KEY"
-      base_url: "https://api.anthropic.com/v1"
-      models:
-        - id: "claude-3-opus-20240229"
-          name: "Claude 3 Opus"
-          context_window: 200000
-          cost_per_1m_tokens: 15
-        - id: "claude-3-sonnet-20240229"
-          name: "Claude 3 Sonnet"
-          context_window: 200000
-          cost_per_1m_tokens: 3
-    
-    ollama:
-      type: "ollama"
-      base_url: "http://localhost:11434"
-      models:
-        - id: "codellama:13b"
-          name: "CodeLlama 13B"
-          context_window: 16000
-          local: true
-        - id: "deepseek-coder:6.7b"
-          name: "DeepSeek Coder 6.7B"
-          context_window: 16000
-          local: true
-    
-    lmstudio:
-      type: "openai-compatible"
-      base_url: "http://localhost:1234/v1"
-      models:
-        - id: "local-model"
-          name: "LM Studio Model"
-          context_window: 32000
-          local: true
-  
-  # Prompt configurations
-  prompts:
-    temperature: 0.7
-    max_tokens: 4000
-    system_prompt: |
-      You are an expert quantum computing backend developer assistant.
-      Help users create custom quantum simulator backends for Proxima.
-      Generate clean, working Python code following Proxima's architecture.
-      Be concise but thorough in explanations.
-```
-
-**Environment Variables:**
-```bash
-# API Keys (store in .env or environment)
-export OPENAI_API_KEY="sk-..."
-export ANTHROPIC_API_KEY="sk-ant-..."
-export GROQ_API_KEY="gsk_..."
-
-# Local LLM endpoints
-export OLLAMA_HOST="http://localhost:11434"
-export LMSTUDIO_HOST="http://localhost:1234"
-```
-
-### State Management
-
-**Wizard State Schema:**
-```python
-@dataclass
-class BackendWizardState:
-    # Step 1: Backend Type
-    backend_type: str = ""  # 'python_library', 'command_line', 'api_server', 'custom'
-    
-    # Step 2: Basic Information
-    backend_name: str = ""  # e.g., "mybackend"
-    display_name: str = ""  # e.g., "My Custom Backend"
-    version: str = "1.0.0"
-    description: str = ""
-    author: str = ""
-    library_name: str = ""  # Python import name (e.g., "mybackend_lib")
-    
-    # Step 3: Capabilities
-    simulator_types: List[str] = field(default_factory=list)  # ['state_vector', 'density_matrix']
-    max_qubits: int = 20
-    supports_noise: bool = False
-    supports_gpu: bool = False
-    supports_batching: bool = False
-    custom_features: Dict[str, Any] = field(default_factory=dict)
-    
-    # Step 4: Gate Mapping
-    gate_mapping_mode: str = "auto"  # 'auto', 'manual', 'template'
-    supported_gates: List[str] = field(default_factory=list)
-    custom_gate_mappings: Dict[str, str] = field(default_factory=dict)
-    
-    # Step 5: Code Template
-    template_type: str = "basic"  # 'basic', 'advanced', 'custom'
-    custom_initialization_code: str = ""
-    custom_execution_code: str = ""
-    
-    # Step 6: Testing
-    test_circuit: str = "bell_state"
-    test_results: Optional[Dict] = None
-    validation_passed: bool = False
-    
-    # Step 7: Review
-    files_to_create: List[str] = field(default_factory=list)
-    generation_successful: bool = False
-    
-    # Navigation
-    current_step: int = 1
-    total_steps: int = 7
-    can_proceed: bool = False
-    errors: List[str] = field(default_factory=list)
-```
+Change Tracking & User Approval
+    ↓
+Sandbox Testing
+    ↓
+Validation & Verification
+    ↓
+Deployment to Proxima
+    ↓
+Backend Registration
+    ↓
+Success! (With undo option)
 
 ---
 
