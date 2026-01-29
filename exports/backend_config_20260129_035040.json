@@ -1,0 +1,18 @@
+{
+  "default_backend": "lret_phase7_unified",
+  "fallback_backend": "lret_cirq_scalability",
+  "enabled_backends": [
+    "lret_base",
+    "lret_phase7_unified",
+    "qiskit_aer",
+    "quest",
+    "qsim",
+    "cuquantum"
+  ],
+  "lret_variants": [
+    "lret_base",
+    "lret_cirq_scalability",
+    "lret_pennylane_hybrid",
+    "lret_phase7_unified"
+  ]
+}

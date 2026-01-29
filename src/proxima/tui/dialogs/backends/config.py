@@ -21,36 +21,58 @@ class BackendConfigDialog(ModalScreen):
         padding: 1 2;
         border: thick $accent;
         background: $surface;
-        width: 70;
-        height: 32;
+        width: 100%;
+        height: 100%;
+        max-width: 100%;
+        max-height: 100%;
     }
     BackendConfigDialog .dialog-title {
         text-style: bold;
         color: $accent;
         text-align: center;
         margin-bottom: 1;
+        height: 2;
+    }
+    BackendConfigDialog ScrollableContainer {
+        height: 1fr;
     }
     BackendConfigDialog .config-section {
         margin: 1 0;
         padding: 1;
         border: solid $primary-darken-2;
+        height: auto;
     }
     BackendConfigDialog .section-title {
         text-style: bold;
         color: $primary;
         margin-bottom: 1;
+        height: 1;
     }
     BackendConfigDialog .config-row {
         layout: horizontal;
-        height: auto;
+        height: 3;
         margin: 0 0 1 0;
+        align: left middle;
     }
     BackendConfigDialog .config-label {
         width: 20;
-        padding-top: 1;
+        height: 3;
+        content-align: left middle;
     }
     BackendConfigDialog .config-input {
-        width: 40;
+        width: 1fr;
+        min-width: 20;
+    }
+    BackendConfigDialog Input {
+        width: 100%;
+        height: 3;
+    }
+    BackendConfigDialog Select {
+        width: 100%;
+        height: 3;
+    }
+    BackendConfigDialog Switch {
+        margin-left: 1;
     }
     BackendConfigDialog .footer {
         height: auto;
@@ -59,9 +81,6 @@ class BackendConfigDialog(ModalScreen):
     }
     BackendConfigDialog Button {
         margin-right: 1;
-    }
-    BackendConfigDialog Switch {
-        margin-left: 1;
     }
     """
 

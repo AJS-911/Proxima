@@ -1,0 +1,10 @@
+{
+  "timestamp": "20260129_204117",
+  "execution_context": {
+    "backend": "auto",
+    "qubits": 0,
+    "shots": 1024,
+    "status": "IDLE"
+  },
+  "conversation": []
+}

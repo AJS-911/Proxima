@@ -715,20 +715,23 @@ class OllamaProvider(_BaseProvider):
         self._endpoint: str | None = None
 
     def send(self, request: LLMRequest, api_key: str | None = None) -> LLMResponse:
-        """Send a request to Ollama server."""
+        """Send a request to Ollama server using the chat API."""
         start = time.perf_counter()
 
         endpoint = self._endpoint or f"http://localhost:{DEFAULT_PORTS['ollama']}"
         model = request.model or self.default_model
 
+        # Use the chat API format (more reliable)
+        messages = []
+        if request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        messages.append({"role": "user", "content": request.prompt})
+
         payload: dict[str, Any] = {
             "model": model,
-            "prompt": request.prompt,
+            "messages": messages,
             "stream": False,
         }
-
-        if request.system_prompt:
-            payload["system"] = request.system_prompt
 
         options: dict[str, Any] = {}
         if request.temperature > 0:
@@ -741,14 +744,15 @@ class OllamaProvider(_BaseProvider):
         try:
             client = self._get_client()
             response = client.post(
-                f"{endpoint}/api/generate",
+                f"{endpoint}/api/chat",
                 json=payload,
             )
             response.raise_for_status()
             data = response.json()
 
             elapsed = (time.perf_counter() - start) * 1000
-            text = data.get("response", "")
+            # Chat API returns message.content
+            text = data.get("message", {}).get("content", "") or data.get("response", "")
 
             return LLMResponse(
                 text=text,
@@ -765,7 +769,19 @@ class OllamaProvider(_BaseProvider):
                 provider=self.name,
                 model=model,
                 latency_ms=elapsed,
-                error=f"Cannot connect to Ollama at {endpoint}. Is it running?",
+                error=f"Cannot connect to Ollama at {endpoint}. Is it running? Try: ollama serve",
+            )
+        except httpx.HTTPStatusError as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            error_msg = f"HTTP {e.response.status_code}"
+            if e.response.status_code == 404:
+                error_msg = f"Model '{model}' not found. Try: ollama pull {model}"
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=error_msg,
             )
         except Exception as e:
             elapsed = (time.perf_counter() - start) * 1000
@@ -795,20 +811,23 @@ class OllamaProvider(_BaseProvider):
         api_key: str | None = None,
         callback: Callable[[str], None] | None = None,
     ) -> LLMResponse:
-        """Send a streaming request to Ollama server."""
+        """Send a streaming request to Ollama server using the chat API."""
         start = time.perf_counter()
 
         endpoint = self._endpoint or f"http://localhost:{DEFAULT_PORTS['ollama']}"
         model = request.model or self.default_model
 
+        # Use the chat API format
+        messages = []
+        if request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        messages.append({"role": "user", "content": request.prompt})
+
         payload: dict[str, Any] = {
             "model": model,
-            "prompt": request.prompt,
+            "messages": messages,
             "stream": True,
         }
-
-        if request.system_prompt:
-            payload["system"] = request.system_prompt
 
         options: dict[str, Any] = {}
         if request.temperature > 0:
@@ -826,7 +845,7 @@ class OllamaProvider(_BaseProvider):
 
             with client.stream(
                 "POST",
-                f"{endpoint}/api/generate",
+                f"{endpoint}/api/chat",
                 json=payload,
             ) as response:
                 response.raise_for_status()
@@ -840,7 +859,8 @@ class OllamaProvider(_BaseProvider):
                     except json.JSONDecodeError:
                         continue
 
-                    text = data.get("response", "")
+                    # Chat API returns message.content
+                    text = data.get("message", {}).get("content", "") or data.get("response", "")
                     if text:
                         collected_text += text
                         chunks.append(text)
@@ -868,7 +888,19 @@ class OllamaProvider(_BaseProvider):
                 provider=self.name,
                 model=model,
                 latency_ms=elapsed,
-                error=f"Cannot connect to Ollama at {endpoint}. Is it running?",
+                error=f"Cannot connect to Ollama at {endpoint}. Is it running? Try: ollama serve",
+            )
+        except httpx.HTTPStatusError as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            error_msg = f"HTTP {e.response.status_code}"
+            if e.response.status_code == 404:
+                error_msg = f"Model '{model}' not found. Try: ollama pull {model}"
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=error_msg,
             )
         except Exception as e:
             elapsed = (time.perf_counter() - start) * 1000
@@ -2124,6 +2156,422 @@ class PerplexityProvider(_BaseProvider):
             return False
 
 
+class GoogleGeminiProvider(_BaseProvider):
+    """Google Gemini API provider (Gemini Pro, Gemini Flash, etc.)."""
+
+    name: ProviderName = "google"  # type: ignore
+    is_local: bool = False
+    requires_api_key: bool = True
+
+    def __init__(self, timeout: float = 60.0):
+        # Use stable model as default, user can override
+        super().__init__("gemini-1.5-flash-latest", timeout)
+        self._api_base = "https://generativelanguage.googleapis.com/v1beta"
+
+    def _get_model_name(self, model: str) -> str:
+        """Normalize model name for API compatibility."""
+        # Handle various model name formats
+        model = model.strip()
+        
+        # Map common aliases to correct model names
+        # Google requires specific model names for the API
+        model_aliases = {
+            # Stable models - use -latest suffix for most recent
+            'gemini-flash': 'gemini-1.5-flash-latest',
+            'gemini-pro': 'gemini-1.5-pro-latest',
+            'flash': 'gemini-1.5-flash-latest',
+            'pro': 'gemini-1.5-pro-latest',
+            'gemini-1.5-flash': 'gemini-1.5-flash-latest',
+            'gemini-1.5-pro': 'gemini-1.5-pro-latest',
+            # Keep -latest versions as-is
+            'gemini-1.5-flash-latest': 'gemini-1.5-flash-latest',
+            'gemini-1.5-pro-latest': 'gemini-1.5-pro-latest',
+            # Older models
+            'gemini-pro-vision': 'gemini-pro-vision',
+            # Experimental models - use as-is
+            'gemini-2.0-flash-exp': 'gemini-2.0-flash-exp',
+            'gemini-exp-1206': 'gemini-exp-1206',
+        }
+        
+        return model_aliases.get(model, model)
+
+    def send(self, request: LLMRequest, api_key: str | None) -> LLMResponse:
+        """Send a request to Google Gemini API."""
+        start = time.perf_counter()
+
+        if not api_key:
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=request.model or self.default_model,
+                latency_ms=0,
+                error="API key required for Google Gemini",
+            )
+
+        model = self._get_model_name(request.model or self.default_model)
+        
+        # Build contents array for Gemini API
+        contents = []
+        
+        # Add system instruction if provided (Gemini uses systemInstruction separately)
+        system_instruction = None
+        if request.system_prompt:
+            system_instruction = {"parts": [{"text": request.system_prompt}]}
+        
+        # Add user message
+        contents.append({
+            "role": "user",
+            "parts": [{"text": request.prompt}]
+        })
+
+        payload: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": request.temperature,
+            }
+        }
+        
+        if system_instruction:
+            payload["systemInstruction"] = system_instruction
+
+        if request.max_tokens:
+            payload["generationConfig"]["maxOutputTokens"] = request.max_tokens
+
+        try:
+            client = self._get_client()
+            # Gemini API uses model name in URL path
+            response = client.post(
+                f"{self._api_base}/models/{model}:generateContent?key={api_key}",
+                headers={
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            elapsed = (time.perf_counter() - start) * 1000
+            
+            # Extract text from Gemini response format
+            text = ""
+            if "candidates" in data and data["candidates"]:
+                candidate = data["candidates"][0]
+                if "content" in candidate and "parts" in candidate["content"]:
+                    parts = candidate["content"]["parts"]
+                    text = "".join(part.get("text", "") for part in parts)
+            
+            # Get token count from usage metadata
+            tokens = 0
+            if "usageMetadata" in data:
+                usage = data["usageMetadata"]
+                tokens = usage.get("totalTokenCount", 0)
+
+            return LLMResponse(
+                text=text,
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                tokens_used=tokens,
+                raw=data,
+            )
+        except httpx.HTTPStatusError as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            error_msg = f"HTTP {e.response.status_code}"
+            try:
+                error_data = e.response.json()
+                if "error" in error_data:
+                    error_msg = f"{error_msg}: {error_data['error'].get('message', str(error_data['error']))}"
+            except Exception:
+                error_msg = f"{error_msg}: {e.response.text[:200]}"
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=error_msg,
+            )
+        except Exception as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=str(e),
+            )
+
+    def stream_send(
+        self,
+        request: LLMRequest,
+        api_key: str | None,
+        callback: Callable[[str], None] | None = None,
+    ) -> LLMResponse:
+        """Send a streaming request to Google Gemini API."""
+        start = time.perf_counter()
+
+        if not api_key:
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=request.model or self.default_model,
+                latency_ms=0,
+                error="API key required for Google Gemini",
+            )
+
+        model = self._get_model_name(request.model or self.default_model)
+
+        contents = []
+        system_instruction = None
+        if request.system_prompt:
+            system_instruction = {"parts": [{"text": request.system_prompt}]}
+        
+        contents.append({
+            "role": "user",
+            "parts": [{"text": request.prompt}]
+        })
+
+        payload: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": request.temperature,
+            }
+        }
+        
+        if system_instruction:
+            payload["systemInstruction"] = system_instruction
+
+        if request.max_tokens:
+            payload["generationConfig"]["maxOutputTokens"] = request.max_tokens
+
+        try:
+            chunks: list[str] = []
+            with httpx.Client(timeout=self.timeout) as client:
+                with client.stream(
+                    "POST",
+                    f"{self._api_base}/models/{model}:streamGenerateContent?key={api_key}&alt=sse",
+                    headers={
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            try:
+                                data = json.loads(data_str)
+                                if "candidates" in data and data["candidates"]:
+                                    candidate = data["candidates"][0]
+                                    if "content" in candidate and "parts" in candidate["content"]:
+                                        for part in candidate["content"]["parts"]:
+                                            content = part.get("text", "")
+                                            if content:
+                                                chunks.append(content)
+                                                if callback:
+                                                    callback(content)
+                            except json.JSONDecodeError:
+                                continue
+
+            elapsed = (time.perf_counter() - start) * 1000
+            full_text = "".join(chunks)
+
+            return LLMResponse(
+                text=full_text,
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                is_streaming=True,
+                stream_chunks=chunks,
+            )
+        except Exception as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=str(e),
+            )
+
+    def is_available(self) -> bool:
+        """Check if Google Gemini API is available."""
+        return True  # Always return True since we need API key to check
+
+
+class XAIProvider(_BaseProvider):
+    """xAI (Grok) API provider - uses OpenAI-compatible API."""
+
+    name: ProviderName = "xai"  # type: ignore
+    is_local: bool = False
+    requires_api_key: bool = True
+
+    def __init__(self, timeout: float = 60.0):
+        super().__init__("grok-beta", timeout)
+        self._api_base = "https://api.x.ai/v1"
+
+    def send(self, request: LLMRequest, api_key: str | None) -> LLMResponse:
+        """Send a request to xAI API."""
+        start = time.perf_counter()
+
+        if not api_key:
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=request.model or self.default_model,
+                latency_ms=0,
+                error="API key required for xAI",
+            )
+
+        model = request.model or self.default_model
+        messages = []
+
+        if request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        messages.append({"role": "user", "content": request.prompt})
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": request.temperature,
+        }
+
+        if request.max_tokens:
+            payload["max_tokens"] = request.max_tokens
+
+        try:
+            client = self._get_client()
+            response = client.post(
+                f"{self._api_base}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            elapsed = (time.perf_counter() - start) * 1000
+            text = data["choices"][0]["message"]["content"]
+            tokens = data.get("usage", {}).get("total_tokens", 0)
+
+            return LLMResponse(
+                text=text,
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                tokens_used=tokens,
+                raw=data,
+            )
+        except httpx.HTTPStatusError as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=f"HTTP {e.response.status_code}: {e.response.text[:200]}",
+            )
+        except Exception as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=str(e),
+            )
+
+    def stream_send(
+        self,
+        request: LLMRequest,
+        api_key: str | None,
+        callback: Callable[[str], None] | None = None,
+    ) -> LLMResponse:
+        """Send a streaming request to xAI API."""
+        start = time.perf_counter()
+
+        if not api_key:
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=request.model or self.default_model,
+                latency_ms=0,
+                error="API key required for xAI",
+            )
+
+        model = request.model or self.default_model
+        messages = []
+
+        if request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        messages.append({"role": "user", "content": request.prompt})
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": request.temperature,
+            "stream": True,
+        }
+
+        if request.max_tokens:
+            payload["max_tokens"] = request.max_tokens
+
+        try:
+            chunks: list[str] = []
+            with httpx.Client(timeout=self.timeout) as client:
+                with client.stream(
+                    "POST",
+                    f"{self._api_base}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                                delta = data["choices"][0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    chunks.append(content)
+                                    if callback:
+                                        callback(content)
+                            except json.JSONDecodeError:
+                                continue
+
+            elapsed = (time.perf_counter() - start) * 1000
+            full_text = "".join(chunks)
+
+            return LLMResponse(
+                text=full_text,
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                is_streaming=True,
+                stream_chunks=chunks,
+            )
+        except Exception as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            return LLMResponse(
+                text="",
+                provider=self.name,
+                model=model,
+                latency_ms=elapsed,
+                error=str(e),
+            )
+
+    def is_available(self) -> bool:
+        """Check if xAI API is available."""
+        return True
+
+
 class DeepSeekProvider(_BaseProvider):
     """DeepSeek AI API provider for advanced reasoning."""
 
@@ -2726,6 +3174,7 @@ class ProviderRegistry:
     - Core: OpenAI, Anthropic, Ollama, LM Studio, llama.cpp
     - Extended: Together AI, Groq, Mistral, Azure OpenAI, Cohere
     - Additional: Perplexity, DeepSeek, Fireworks, HuggingFace, Replicate, OpenRouter
+    - Custom: Google Gemini, xAI (Grok)
     """
 
     def __init__(self) -> None:
@@ -2749,6 +3198,9 @@ class ProviderRegistry:
             "huggingface": HuggingFaceInferenceProvider(),  # type: ignore
             "replicate": ReplicateProvider(),  # type: ignore
             "openrouter": OpenRouterProvider(),  # type: ignore
+            # Google Gemini and xAI
+            "google": GoogleGeminiProvider(),  # type: ignore
+            "xai": XAIProvider(),  # type: ignore
         }
 
     def get(self, name: ProviderName) -> LLMProvider:

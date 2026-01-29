@@ -34,8 +34,10 @@ class ProximaTUI(App):
         Binding("3", "goto_results", "Results", show=True),
         Binding("4", "goto_backends", "Backends", show=True),
         Binding("5", "goto_settings", "Settings", show=True),
+        Binding("6", "goto_ai_assistant", "AI Assistant", show=True),
         Binding("ctrl+p", "open_commands", "Commands", show=True),
         Binding("question_mark", "show_help", "Help", show=True),
+        Binding("ctrl+t", "toggle_ai_thinking", "AI Thinking", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
     ]
     
@@ -159,6 +161,7 @@ class ProximaTUI(App):
             BackendsScreen,
             SettingsScreen,
             HelpScreen,
+            AIAssistantScreen,
         )
         
         screens = {
@@ -168,6 +171,7 @@ class ProximaTUI(App):
             "backends": BackendsScreen,
             "settings": SettingsScreen,
             "help": HelpScreen,
+            "ai_assistant": AIAssistantScreen,
         }
         
         screen_class = screens.get(screen_name)
@@ -195,9 +199,27 @@ class ProximaTUI(App):
         """Navigate to settings screen."""
         self._navigate_to_screen("settings")
     
+    def action_goto_ai_assistant(self) -> None:
+        """Navigate to AI Assistant screen."""
+        self._navigate_to_screen("ai_assistant")
+    
     def action_show_help(self) -> None:
         """Show help screen."""
         self._navigate_to_screen("help")
+    
+    def action_toggle_ai_thinking(self) -> None:
+        """Toggle AI thinking panel visibility."""
+        from .dialogs import AIThinkingDialog
+        
+        # Toggle the state
+        self.state.thinking_panel_visible = not self.state.thinking_panel_visible
+        
+        if self.state.thinking_panel_visible:
+            # Show the AI thinking dialog
+            self.push_screen(AIThinkingDialog(state=self.state))
+        else:
+            # If already showing, just dismiss will happen via escape
+            self.notify("AI Thinking: Press Ctrl+T to open", severity="information")
     
     def action_open_commands(self) -> None:
         """Open command palette."""
@@ -228,6 +250,7 @@ class ProximaTUI(App):
             "goto_results": self.action_goto_results,
             "goto_backends": self.action_goto_backends,
             "goto_settings": self.action_goto_settings,
+            "goto_ai_assistant": self.action_goto_ai_assistant,
             "show_help": self.action_show_help,
             "quit": self.action_quit,
             
@@ -249,10 +272,21 @@ class ProximaTUI(App):
             "run_health_check": self._action_run_health_check,
             "compare_backends": self._action_compare_backends,
             
+            # LRET Variants
+            "show_lret_installer": self._action_show_lret_installer,
+            "show_lret_config": self._action_show_lret_config,
+            "show_lret_benchmark": self._action_show_lret_benchmark,
+            "show_pennylane_algorithms": self._action_show_pennylane_algorithms,
+            "show_phase7_unified": self._action_show_phase7_unified,
+            "show_variant_analysis": self._action_show_variant_analysis,
+            "show_benchmark_comparison": self._action_show_benchmark_comparison,
+            "show_algorithm_wizard": self._action_show_algorithm_wizard,
+            
             # LLM
             "configure_llm": self._action_configure_llm,
             "toggle_thinking": self._action_toggle_thinking,
             "switch_provider": self._action_switch_provider,
+            "show_ai_thinking": self.action_toggle_ai_thinking,
         }
         
         if command.action_name and command.action_name in action_map:
@@ -337,6 +371,69 @@ class ProximaTUI(App):
     def _action_compare_backends(self) -> None:
         """Compare backends."""
         self.action_goto_backends()
+    
+    def _action_show_lret_installer(self) -> None:
+        """Show LRET installer dialog."""
+        from .dialogs import LRETInstallerDialog
+        
+        def handle_result(result):
+            if result and result.get("installed"):
+                installed = result["installed"]
+                self.notify(f"✓ Installed: {', '.join(installed)}", severity="success")
+        
+        self.push_screen(LRETInstallerDialog(), handle_result)
+    
+    def _action_show_lret_config(self) -> None:
+        """Show LRET configuration dialog."""
+        from .dialogs import LRETConfigDialog
+        
+        def handle_result(result):
+            if result and result.get("saved"):
+                self.notify("✓ LRET configuration saved", severity="success")
+        
+        self.push_screen(LRETConfigDialog(), handle_result)
+    
+    def _action_show_lret_benchmark(self) -> None:
+        """Show LRET benchmark comparison dialog."""
+        from .dialogs import LRETBenchmarkDialog
+        
+        self.push_screen(LRETBenchmarkDialog())
+    
+    def _action_show_pennylane_algorithms(self) -> None:
+        """Show PennyLane variational algorithms dialog."""
+        from .dialogs import PennyLaneAlgorithmDialog
+        
+        self.push_screen(PennyLaneAlgorithmDialog())
+    
+    def _action_show_phase7_unified(self) -> None:
+        """Show Phase 7 unified multi-framework configuration dialog."""
+        from .dialogs import Phase7Dialog
+        
+        def handle_result(result):
+            if result:
+                self.notify("✓ Phase 7 configuration applied", severity="success")
+        
+        self.push_screen(Phase7Dialog(), handle_result)
+    
+    def _action_show_variant_analysis(self) -> None:
+        """Show LRET variant analysis dialog."""
+        from .dialogs import VariantAnalysisDialog
+        
+        self.push_screen(VariantAnalysisDialog())
+    
+    def _action_show_benchmark_comparison(self) -> None:
+        """Show LRET vs Cirq benchmark comparison screen."""
+        from .screens import BenchmarkComparisonScreen
+        
+        self.push_screen(BenchmarkComparisonScreen())
+    
+    def _action_show_algorithm_wizard(self) -> None:
+        """Show PennyLane algorithm wizard."""
+        try:
+            from .wizards import PennyLaneAlgorithmWizard
+            self.push_screen(PennyLaneAlgorithmWizard())
+        except ImportError:
+            self.notify("Algorithm wizard not available", severity="warning")
     
     def _action_configure_llm(self) -> None:
         """Configure LLM."""

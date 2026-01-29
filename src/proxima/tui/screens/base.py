@@ -128,6 +128,10 @@ class BaseScreen(Screen):
         """Navigate to settings."""
         self.app.action_goto_settings()
     
+    def action_goto_ai_assistant(self) -> None:
+        """Navigate to AI Assistant."""
+        self.app.action_goto_ai_assistant()
+    
     def action_show_help(self) -> None:
         """Show help."""
         self.app.action_show_help()

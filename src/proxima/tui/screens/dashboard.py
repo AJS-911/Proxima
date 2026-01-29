@@ -3,6 +3,7 @@
 Main landing screen with overview and quick actions.
 """
 
+from pathlib import Path
 from textual.containers import Horizontal, Vertical, Container
 from textual.widgets import Static, Button, DataTable
 from rich.text import Text
@@ -18,10 +19,10 @@ from datetime import datetime
 
 try:
     from proxima.resources.session import SessionManager, SessionMetadata, SessionStatus
-    from pathlib import Path
     SESSION_MANAGER_AVAILABLE = True
 except ImportError:
     SESSION_MANAGER_AVAILABLE = False
+    SessionManager = None  # type: ignore
 
 try:
     from proxima.core.pipeline import run_simulation
@@ -175,90 +176,228 @@ class DashboardScreen(BaseScreen):
         elif button_id == "btn-results":
             self.app.action_goto_results()
         elif button_id == "btn-sessions":
-            # Open session dialog with sample sessions
-            # Get real sessions if available
-            sessions_list = []
-            if SESSION_MANAGER_AVAILABLE:
-                try:
-                    storage_dir = Path.home() / ".proxima" / "sessions"
-                    manager = SessionManager(storage_dir=storage_dir)
-                    real_sessions = manager.list_sessions()
-                    
-                    for meta in real_sessions[:10]:  # Show up to 10 sessions
-                        status_map = {
-                            SessionStatus.COMPLETED: "completed",
-                            SessionStatus.RUNNING: "active",
-                            SessionStatus.PAUSED: "paused",
-                            SessionStatus.FAILED: "failed",
-                            SessionStatus.ABORTED: "aborted",
-                            SessionStatus.CREATED: "created",
-                        }
-                        sessions_list.append(SessionInfo(
-                            id=meta.id,
-                            title=meta.name or f"Session {meta.id[:8]}",
-                            status=status_map.get(meta.status, "unknown"),
-                            created_at=datetime.fromtimestamp(meta.created_at),
-                            task_count=0,  # Would need full session load
-                            backend="Auto",
-                        ))
-                except Exception:
-                    pass
-            
-            # Fallback to sample data if no real sessions
-            if not sessions_list:
-                sessions_list = [
-                    SessionInfo(
-                        id="a1b2c3d4-1234-5678-9abc-def012345678",
-                        title="Bell State Experiment",
-                        status="active",
-                        created_at=datetime.now(),
-                        task_count=3,
-                        backend="Cirq",
-                    ),
-                    SessionInfo(
-                        id="e5f6g7h8-5678-9012-cdef-345678901234",
-                        title="GHZ Analysis",
-                        status="completed",
-                        created_at=datetime.now(),
-                        task_count=5,
-                        backend="Qiskit",
-                    ),
-                    SessionInfo(
-                        id="i9j0k1l2-9012-3456-0123-456789012345",
-                        title="Grover Search Test",
-                        status="paused",
-                        created_at=datetime.now(),
-                        task_count=2,
-                        backend="LRET",
-                    ),
-                ]
-            
-            sample_sessions = sessions_list
-            
-            def handle_session_action(result):
-                if result:
-                    action = result.get("action")
-                    session = result.get("session")
-                    if action == "switch" and session:
-                        self.notify(f"Switched to session: {session.title}", severity="success")
-                    elif action == "new":
-                        self.notify("Creating new session...", severity="information")
-                    elif action == "delete" and session:
-                        self.notify(f"Deleted session: {session.title}", severity="warning")
-                    elif action == "export" and session:
-                        self.notify(f"Exporting session: {session.title}")
-            
-            self.app.push_screen(
-                SessionsDialog(
-                    sessions=sample_sessions,
-                    current_session_id="a1b2c3d4-1234-5678-9abc-def012345678",
-                ),
-                handle_session_action,
-            )
+            self._show_sessions_dialog()
         elif button_id == "btn-config":
             self.app.action_goto_settings()
         elif button_id == "btn-help":
             self.app.action_show_help()
+    
+    def _show_sessions_dialog(self) -> None:
+        """Show the sessions management dialog."""
+        # Get real sessions if available
+        sessions_list = []
+        storage_dir = Path.home() / ".proxima" / "sessions"
+        manager = None
+        
+        if SESSION_MANAGER_AVAILABLE:
+            try:
+                manager = SessionManager(storage_dir=storage_dir)
+                real_sessions = manager.list_sessions()
+                
+                for meta in real_sessions[:10]:  # Show up to 10 sessions
+                    status_map = {
+                        SessionStatus.COMPLETED: "completed",
+                        SessionStatus.RUNNING: "active",
+                        SessionStatus.PAUSED: "paused",
+                        SessionStatus.FAILED: "failed",
+                        SessionStatus.ABORTED: "aborted",
+                        SessionStatus.CREATED: "created",
+                    }
+                    sessions_list.append(SessionInfo(
+                        id=meta.id,
+                        title=meta.name or f"Session {meta.id[:8]}",
+                        status=status_map.get(meta.status, "unknown"),
+                        created_at=datetime.fromtimestamp(meta.created_at),
+                        task_count=0,  # Would need full session load
+                        backend="Auto",
+                    ))
+            except Exception:
+                pass
+        
+        # Fallback to sample data if no real sessions
+        if not sessions_list:
+            sessions_list = [
+                SessionInfo(
+                    id="a1b2c3d4-1234-5678-9abc-def012345678",
+                    title="Bell State Experiment",
+                    status="active",
+                    created_at=datetime.now(),
+                    task_count=3,
+                    backend="Cirq",
+                ),
+                SessionInfo(
+                    id="e5f6g7h8-5678-9012-cdef-345678901234",
+                    title="GHZ Analysis",
+                    status="completed",
+                    created_at=datetime.now(),
+                    task_count=5,
+                    backend="Qiskit",
+                ),
+                SessionInfo(
+                    id="i9j0k1l2-9012-3456-0123-456789012345",
+                    title="Grover Search Test",
+                    status="paused",
+                    created_at=datetime.now(),
+                    task_count=2,
+                    backend="LRET",
+                ),
+            ]
+        
+        current_session_id = self.state.session_id if hasattr(self.state, 'session_id') else sessions_list[0].id if sessions_list else None
+        
+        def handle_session_action(result):
+            if result:
+                action = result.get("action")
+                session = result.get("session")
+                self._handle_session_action(action, session, manager, storage_dir)
+        
+        self.app.push_screen(
+            SessionsDialog(
+                sessions=sessions_list,
+                current_session_id=current_session_id,
+            ),
+            handle_session_action,
+        )
+    
+    def _handle_session_action(self, action: str, session: SessionInfo | None, manager: SessionManager | None, storage_dir: Path) -> None:
+        """Handle session actions from the dialog.
+        
+        Args:
+            action: The action to perform (switch, new, delete, export)
+            session: The session to act on (for switch, delete, export)
+            manager: The SessionManager instance
+            storage_dir: Path to session storage directory
+        """
+        if action == "switch" and session:
+            self._switch_to_session(session, manager)
+        elif action == "new":
+            self._create_new_session(manager, storage_dir)
+        elif action == "delete" and session:
+            self._delete_session(session, manager, storage_dir)
+        elif action == "export" and session:
+            self._export_session(session, manager, storage_dir)
+    
+    def _switch_to_session(self, session: SessionInfo, manager: SessionManager | None) -> None:
+        """Switch to a different session."""
+        if manager and SESSION_MANAGER_AVAILABLE:
+            try:
+                if manager.set_current(session.id):
+                    current = manager.current
+                    if current:
+                        # Update TUI state with session data
+                        self.state.current_task = current.metadata.name or f"Session {session.id[:8]}"
+                        if hasattr(self.state, 'session_id'):
+                            self.state.session_id = session.id
+                        self.notify(f"✓ Switched to: {session.title}", severity="success")
+                        return
+            except Exception as e:
+                self.notify(f"Error switching session: {e}", severity="error")
+                return
+        
+        # Fallback for demo mode
+        self.state.current_task = session.title
+        if hasattr(self.state, 'session_id'):
+            self.state.session_id = session.id
+        self.notify(f"✓ Switched to: {session.title}", severity="success")
+    
+    def _create_new_session(self, manager: SessionManager | None, storage_dir: Path) -> None:
+        """Create a new session."""
+        import uuid
+        
+        if manager and SESSION_MANAGER_AVAILABLE:
+            try:
+                new_session = manager.create(name=f"New Session {datetime.now().strftime('%H:%M')}")
+                manager.save(new_session)
+                self.state.current_task = new_session.metadata.name
+                if hasattr(self.state, 'session_id'):
+                    self.state.session_id = new_session.metadata.id
+                self.notify(f"✓ Created: {new_session.metadata.name}", severity="success")
+                # Reset execution state for new session
+                self.state.is_running = False
+                self.state.execution_status = "IDLE"
+                self.state.progress_percent = 0.0
+                return
+            except Exception as e:
+                self.notify(f"Error creating session: {e}", severity="error")
+                return
+        
+        # Fallback for demo mode
+        new_id = str(uuid.uuid4())
+        new_name = f"New Session {datetime.now().strftime('%H:%M')}"
+        self.state.current_task = new_name
+        if hasattr(self.state, 'session_id'):
+            self.state.session_id = new_id
+        self.state.is_running = False
+        self.state.execution_status = "IDLE"
+        self.state.progress_percent = 0.0
+        self.notify(f"✓ Created: {new_name}", severity="success")
+    
+    def _delete_session(self, session: SessionInfo, manager: SessionManager | None, storage_dir: Path) -> None:
+        """Delete a session."""
+        # Check if trying to delete current session
+        current_id = getattr(self.state, 'session_id', None)
+        if current_id == session.id:
+            self.notify("Cannot delete active session", severity="warning")
+            return
+        
+        if manager and SESSION_MANAGER_AVAILABLE:
+            try:
+                if manager.delete(session.id):
+                    self.notify(f"✓ Deleted: {session.title}", severity="success")
+                    return
+                else:
+                    self.notify(f"Session not found: {session.title}", severity="warning")
+                    return
+            except Exception as e:
+                self.notify(f"Error deleting session: {e}", severity="error")
+                return
+        
+        # Fallback for demo mode
+        self.notify(f"✓ Deleted: {session.title}", severity="success")
+    
+    def _export_session(self, session: SessionInfo, manager: SessionManager | None, storage_dir: Path) -> None:
+        """Export a session to a file."""
+        import json
+        
+        export_dir = Path.home() / ".proxima" / "exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        
+        if manager and SESSION_MANAGER_AVAILABLE:
+            try:
+                session_data = manager.get(session.id)
+                if session_data:
+                    export_path = export_dir / f"session_{session.id[:8]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    export_content = {
+                        "id": session_data.metadata.id,
+                        "name": session_data.metadata.name,
+                        "status": session_data.metadata.status.name,
+                        "created_at": session_data.metadata.created_at,
+                        "config": session_data.config,
+                        "state": session_data.state,
+                        "results": session_data.results,
+                    }
+                    export_path.write_text(json.dumps(export_content, indent=2, default=str))
+                    self.notify(f"✓ Exported to: {export_path.name}", severity="success")
+                    return
+            except Exception as e:
+                self.notify(f"Error exporting session: {e}", severity="error")
+                return
+        
+        # Fallback for demo mode - create a sample export
+        try:
+            export_path = export_dir / f"session_{session.id[:8]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            export_content = {
+                "id": session.id,
+                "name": session.title,
+                "status": session.status,
+                "created_at": session.created_at.isoformat(),
+                "task_count": session.task_count,
+                "backend": session.backend,
+            }
+            export_path.write_text(json.dumps(export_content, indent=2, default=str))
+            self.notify(f"✓ Exported to: {export_path.name}", severity="success")
+        except Exception as e:
+            self.notify(f"Error exporting: {e}", severity="error")
     
     def _show_simulation_dialog(self) -> None:
         """Show the simulation configuration dialog."""
@@ -274,7 +413,34 @@ class DashboardScreen(BaseScreen):
         Args:
             config: Simulation configuration from dialog
         """
+        from ..state.tui_state import StageInfo
+        
         self.notify(f"🚀 Starting simulation: {config.description or config.circuit_type}", severity="information")
+        
+        # Define simulation stages based on circuit complexity
+        stages = [
+            StageInfo(name="Initialization", index=0, status="pending"),
+            StageInfo(name="Circuit Generation", index=1, status="pending"),
+            StageInfo(name="Optimization", index=2, status="pending"),
+            StageInfo(name="Execution", index=3, status="pending"),
+            StageInfo(name="Measurement", index=4, status="pending"),
+            StageInfo(name="Result Processing", index=5, status="pending"),
+        ]
+        
+        # Update state for execution screen BEFORE navigating
+        self.state.current_task = config.description or f"{config.circuit_type.title()} Circuit"
+        self.state.current_backend = config.backend if config.backend != "auto" else "Cirq"
+        self.state.qubits = config.qubits
+        self.state.shots = config.shots
+        self.state.is_running = True
+        self.state.execution_status = "RUNNING"
+        self.state.progress_percent = 0.0
+        self.state.stage_index = 0
+        self.state.current_stage = stages[0].name
+        self.state.total_stages = len(stages)
+        self.state.all_stages = stages
+        self.state.elapsed_ms = 0
+        self.state.eta_ms = 0
         
         # Navigate to execution screen
         self.app.action_goto_execution()
@@ -282,27 +448,14 @@ class DashboardScreen(BaseScreen):
         if PIPELINE_AVAILABLE:
             # Start actual simulation in background
             try:
-                async def run_sim():
-                    result = await run_simulation(
-                        user_input=config.description or f"Create a {config.circuit_type} circuit",
-                        backends=[config.backend] if config.backend != "auto" else None,
-                        qubits=config.qubits,
-                        shots=config.shots,
-                    )
-                    return result
-                
-                # Run async simulation
+                # Run async simulation using Textual's worker system
                 self.app.call_later(lambda: self._run_async_simulation(config))
                 
             except Exception as e:
                 self.notify(f"Failed to start simulation: {e}", severity="error")
+                self.state.is_running = False
+                self.state.execution_status = "FAILED"
         else:
-            # Fallback: Update state for demo
-            self.state.current_task = config.description or f"{config.circuit_type.title()} State"
-            self.state.current_backend = config.backend if config.backend != "auto" else "Cirq"
-            self.state.qubits = config.qubits
-            self.state.shots = config.shots
-            self.state.is_running = True
             self.notify("Simulation started (demo mode)", severity="information")
     
     def _run_async_simulation(self, config: SimulationConfig) -> None:
@@ -317,11 +470,18 @@ class DashboardScreen(BaseScreen):
                     qubits=config.qubits,
                     shots=config.shots,
                 )
+                # Update state on completion
+                self.state.is_running = False
+                self.state.progress_percent = 100.0
                 if result.get("success"):
+                    self.state.execution_status = "COMPLETED"
                     self.notify("✓ Simulation completed successfully!", severity="success")
                 else:
+                    self.state.execution_status = "FAILED"
                     self.notify(f"Simulation failed: {result.get('error', 'Unknown error')}", severity="error")
             except Exception as e:
+                self.state.is_running = False
+                self.state.execution_status = "FAILED"
                 self.notify(f"Simulation error: {e}", severity="error")
         
         asyncio.create_task(_run())
