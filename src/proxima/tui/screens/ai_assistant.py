@@ -16,8 +16,9 @@ from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field, asdict
 
 from textual.containers import Horizontal, Vertical, Container, ScrollableContainer
-from textual.widgets import Static, Button, Input, RichLog, TextArea
+from textual.widgets import Static, Button, Input, RichLog, TextArea, Label, Select
 from textual.binding import Binding
+from textual.screen import ModalScreen
 from rich.text import Text
 from rich.panel import Panel
 from rich.markdown import Markdown
@@ -89,13 +90,132 @@ class ChatSession:
         return session
 
 
+class ExportNameDialog(ModalScreen[str]):
+    """Dialog for entering custom export filename."""
+    
+    DEFAULT_CSS = """
+    ExportNameDialog {
+        align: center middle;
+    }
+    
+    ExportNameDialog > Vertical {
+        width: 60;
+        height: auto;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    
+    ExportNameDialog Label {
+        margin-bottom: 1;
+    }
+    
+    ExportNameDialog Input {
+        margin-bottom: 1;
+    }
+    
+    ExportNameDialog Horizontal {
+        height: auto;
+        align: center middle;
+    }
+    
+    ExportNameDialog Button {
+        margin: 0 1;
+    }
+    """
+    
+    def __init__(self, default_name: str = "") -> None:
+        super().__init__()
+        self._default_name = default_name
+    
+    def compose(self):
+        with Vertical():
+            yield Label("Enter a name for the exported chat:")
+            yield Input(value=self._default_name, id="export-name-input", placeholder="e.g., quantum_algorithms_discussion")
+            with Horizontal():
+                yield Button("Export", variant="primary", id="export-btn")
+                yield Button("Cancel", variant="default", id="cancel-btn")
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "export-btn":
+            name_input = self.query_one("#export-name-input", Input)
+            self.dismiss(name_input.value.strip())
+        else:
+            self.dismiss("")
+    
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key in input."""
+        self.dismiss(event.value.strip())
+
+
+class ImportSelectDialog(ModalScreen[str]):
+    """Dialog for selecting which chat to import."""
+    
+    DEFAULT_CSS = """
+    ImportSelectDialog {
+        align: center middle;
+    }
+    
+    ImportSelectDialog > Vertical {
+        width: 80;
+        height: auto;
+        max-height: 80%;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    
+    ImportSelectDialog Label {
+        margin-bottom: 1;
+    }
+    
+    ImportSelectDialog Select {
+        margin-bottom: 1;
+        width: 100%;
+    }
+    
+    ImportSelectDialog Horizontal {
+        height: auto;
+        align: center middle;
+    }
+    
+    ImportSelectDialog Button {
+        margin: 0 1;
+    }
+    """
+    
+    def __init__(self, chat_files: List[tuple]) -> None:
+        """Initialize with list of (display_name, file_path) tuples."""
+        super().__init__()
+        self._chat_files = chat_files
+    
+    def compose(self):
+        with Vertical():
+            yield Label("Select a chat to import:")
+            options = [(name, path) for name, path in self._chat_files]
+            yield Select(options, id="chat-select", prompt="Choose a chat...")
+            with Horizontal():
+                yield Button("Import", variant="primary", id="import-btn")
+                yield Button("Cancel", variant="default", id="cancel-btn")
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "import-btn":
+            select = self.query_one("#chat-select", Select)
+            if select.value and select.value != Select.BLANK:
+                self.dismiss(str(select.value))
+            else:
+                self.dismiss("")
+        else:
+            self.dismiss("")
+
+
 class AIAssistantScreen(BaseScreen):
     """Full-featured AI Assistant screen.
     
     Features:
-    - Persistent chat history
+    - Persistent chat history (survives tab switches)
     - Multi-line input (Shift+Enter for new line)
-    - Import/export conversations
+    - Import/export conversations with custom names
     - Real-time statistics
     - Keyboard shortcuts
     """
@@ -308,7 +428,7 @@ class AIAssistantScreen(BaseScreen):
         """Initialize the AI Assistant screen."""
         super().__init__(**kwargs)
         
-        # Chat state
+        # Chat state - will be restored from TUIState if available
         self._current_session: ChatSession = ChatSession()
         self._sessions: List[ChatSession] = []
         self._prompt_history: List[str] = []
@@ -345,6 +465,9 @@ class AIAssistantScreen(BaseScreen):
         # Load settings and history
         self._load_settings()
         self._load_chat_history()
+        
+        # Restore chat state from TUIState (for persistence across tab switches)
+        self._restore_from_state()
     
     def _load_settings(self) -> None:
         """Load LLM settings from config."""
@@ -414,6 +537,52 @@ class AIAssistantScreen(BaseScreen):
         except Exception:
             pass
     
+    def _restore_from_state(self) -> None:
+        """Restore chat state from TUIState for persistence across tab switches."""
+        try:
+            if hasattr(self, 'state') and self.state:
+                # Restore messages
+                if self.state.ai_chat_messages:
+                    self._current_session.messages = [
+                        ChatMessage(**m) for m in self.state.ai_chat_messages
+                    ]
+                
+                # Restore session info
+                if self.state.ai_chat_session_id:
+                    self._current_session.id = self.state.ai_chat_session_id
+                if self.state.ai_chat_session_name:
+                    self._current_session.name = self.state.ai_chat_session_name
+                
+                # Restore stats
+                if self.state.ai_chat_stats:
+                    self._stats.update(self.state.ai_chat_stats)
+                    self._current_session.total_tokens = self._stats.get('total_tokens', 0)
+                    self._current_session.total_requests = self._stats.get('total_requests', 0)
+        except Exception:
+            pass
+    
+    def _save_to_state(self) -> None:
+        """Save chat state to TUIState for persistence across tab switches."""
+        try:
+            if hasattr(self, 'state') and self.state:
+                # Save messages
+                self.state.ai_chat_messages = [asdict(m) for m in self._current_session.messages]
+                
+                # Save session info
+                self.state.ai_chat_session_id = self._current_session.id
+                self.state.ai_chat_session_name = self._current_session.name
+                
+                # Save stats
+                self.state.ai_chat_stats = {
+                    'total_messages': len(self._current_session.messages),
+                    'total_tokens': self._current_session.total_tokens,
+                    'total_requests': self._current_session.total_requests,
+                    'avg_response_time': self._stats.get('avg_response_time', 0),
+                    'session_start': self._stats.get('session_start', time.time()),
+                }
+        except Exception:
+            pass
+    
     def _load_chat_history(self) -> None:
         """Load chat history from disk."""
         try:
@@ -433,7 +602,7 @@ class AIAssistantScreen(BaseScreen):
             pass
     
     def _save_current_session(self) -> None:
-        """Save current session to disk."""
+        """Save current session to disk and TUIState."""
         try:
             history_dir = Path.home() / ".proxima" / "chat_history"
             history_dir.mkdir(parents=True, exist_ok=True)
@@ -443,16 +612,54 @@ class AIAssistantScreen(BaseScreen):
             
             with open(file_path, 'w') as f:
                 json.dump(self._current_session.to_dict(), f, indent=2)
+            
+            # Also save to TUIState for persistence
+            self._save_to_state()
         except Exception:
             pass
     
     def on_mount(self) -> None:
         """Called when screen is mounted."""
         self._update_stats_display()
-        self._show_welcome_message()
+        
+        # Restore previous chat messages if any
+        if self._current_session.messages:
+            self._restore_chat_display()
+        else:
+            self._show_welcome_message()
         
         # Focus the input
         self.set_timer(0.1, self._focus_input)
+    
+    def on_unmount(self) -> None:
+        """Called when screen is unmounted - save state for persistence."""
+        self._save_to_state()
+        self._save_current_session()
+    
+    def _restore_chat_display(self) -> None:
+        """Restore chat messages to display after returning to screen."""
+        try:
+            theme = get_theme()
+            chat_log = self.query_one("#chat-log", RichLog)
+            
+            # Show welcome header
+            welcome = Text()
+            welcome.append("🤖 AI Assistant\n", style=f"bold {theme.accent}")
+            welcome.append("━" * 50 + "\n", style=theme.border)
+            welcome.append("(Chat restored from previous session)\n\n", style=theme.fg_muted)
+            chat_log.write(welcome)
+            
+            # Replay all messages
+            for msg in self._current_session.messages:
+                text = Text()
+                if msg.role == 'user':
+                    text.append("\n👤 You\n", style=f"bold {theme.primary}")
+                else:
+                    text.append("\n🤖 AI\n", style=f"bold {theme.accent}")
+                text.append(msg.content + "\n", style=theme.fg_base)
+                chat_log.write(text)
+        except Exception:
+            self._show_welcome_message()
     
     def _focus_input(self) -> None:
         """Focus the prompt input."""
@@ -1115,39 +1322,110 @@ Could you provide more details about what you'd like to accomplish?"""
             pass
     
     def action_export_chat(self) -> None:
-        """Export current chat to file."""
-        try:
-            export_dir = Path("exports")
-            export_dir.mkdir(exist_ok=True)
+        """Export current chat to file with custom name."""
+        if not self._current_session.messages:
+            self.notify("No messages to export", severity="warning")
+            return
+        
+        # Generate default name from session name or first message
+        default_name = self._current_session.name
+        if default_name == "New Chat" and self._current_session.messages:
+            # Use first few words of first user message
+            first_msg = self._current_session.messages[0].content
+            words = first_msg.split()[:5]
+            default_name = "_".join(words).replace("?", "").replace("!", "")[:30]
+        
+        # Show dialog for custom name
+        def handle_export_name(name: str) -> None:
+            if not name:
+                return  # User cancelled
             
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = export_dir / f"ai_chat_{timestamp}.json"
-            
-            with open(filename, 'w') as f:
-                json.dump(self._current_session.to_dict(), f, indent=2)
-            
-            self.notify(f"Chat exported to {filename}", severity="success")
-        except Exception as e:
-            self.notify(f"Export failed: {e}", severity="error")
+            try:
+                export_dir = Path("exports")
+                export_dir.mkdir(exist_ok=True)
+                
+                # Sanitize filename
+                safe_name = "".join(c if c.isalnum() or c in "_- " else "_" for c in name)
+                safe_name = safe_name.strip().replace(" ", "_")
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = export_dir / f"ai_conversation_{safe_name}_{timestamp}.json"
+                
+                # Update session name
+                self._current_session.name = name
+                
+                with open(filename, 'w') as f:
+                    json.dump(self._current_session.to_dict(), f, indent=2)
+                
+                self.notify(f"Chat exported to {filename}", severity="success")
+            except Exception as e:
+                self.notify(f"Export failed: {e}", severity="error")
+        
+        self.app.push_screen(ExportNameDialog(default_name), handle_export_name)
     
     def action_import_chat(self) -> None:
-        """Import chat from file."""
+        """Import chat from file with selection dialog."""
         try:
-            # Look for recent exports
+            # Look for exports in both exports directory and chat history
             export_dir = Path("exports")
-            if not export_dir.exists():
-                self.notify("No exports directory found", severity="warning")
-                return
+            history_dir = Path.home() / ".proxima" / "chat_history"
             
-            # Find most recent chat export
-            chat_files = list(export_dir.glob("ai_chat_*.json"))
+            chat_files = []
+            
+            # Find exported chats
+            if export_dir.exists():
+                for f in export_dir.glob("ai_*.json"):
+                    chat_files.append(f)
+                for f in export_dir.glob("ai_conversation_*.json"):
+                    if f not in chat_files:
+                        chat_files.append(f)
+            
+            # Find chat history files
+            if history_dir.exists():
+                for f in history_dir.glob("chat_*.json"):
+                    chat_files.append(f)
+            
             if not chat_files:
                 self.notify("No chat exports found", severity="warning")
                 return
             
-            latest = max(chat_files, key=lambda p: p.stat().st_mtime)
+            # Sort by modification time (newest first)
+            chat_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             
-            with open(latest, 'r') as f:
+            # If only one file, import directly
+            if len(chat_files) == 1:
+                self._import_chat_file(chat_files[0])
+                return
+            
+            # Build display names for selection
+            file_options = []
+            for f in chat_files[:20]:  # Limit to 20 most recent
+                try:
+                    with open(f, 'r') as fp:
+                        data = json.load(fp)
+                    name = data.get('name', f.stem)
+                    created = data.get('created_at', '')[:10]  # Just date
+                    msg_count = len(data.get('messages', []))
+                    display_name = f"{name} ({msg_count} msgs, {created})"
+                except Exception:
+                    display_name = f.stem
+                file_options.append((display_name, str(f)))
+            
+            # Show selection dialog
+            def handle_import_selection(file_path: str) -> None:
+                if not file_path:
+                    return  # User cancelled
+                self._import_chat_file(Path(file_path))
+            
+            self.app.push_screen(ImportSelectDialog(file_options), handle_import_selection)
+            
+        except Exception as e:
+            self.notify(f"Import failed: {e}", severity="error")
+    
+    def _import_chat_file(self, file_path: Path) -> None:
+        """Import chat from a specific file."""
+        try:
+            with open(file_path, 'r') as f:
                 data = json.load(f)
             
             # Load session
@@ -1171,7 +1449,8 @@ Could you provide more details about what you'd like to accomplish?"""
                 chat_log.write(text)
             
             self._update_stats_display()
-            self.notify(f"Chat imported from {latest.name}", severity="success")
+            self._save_to_state()  # Save to state for persistence
+            self.notify(f"Chat imported: {self._current_session.name}", severity="success")
             
         except Exception as e:
             self.notify(f"Import failed: {e}", severity="error")

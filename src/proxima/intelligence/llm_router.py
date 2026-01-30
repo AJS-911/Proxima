@@ -2189,7 +2189,7 @@ class GoogleGeminiProvider(_BaseProvider):
             # Older models
             'gemini-pro-vision': 'gemini-pro-vision',
             # Experimental models - use as-is
-            'gemini-2.0-flash-exp': 'gemini-2.0-flash-exp',
+            'gemini-2.0-flash-exp': 'gemini-1.5-flash-latest',  # Fallback to stable if exp unavailable
             'gemini-exp-1206': 'gemini-exp-1206',
         }
         

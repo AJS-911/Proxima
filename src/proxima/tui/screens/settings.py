@@ -344,14 +344,13 @@ class SettingsScreen(BaseScreen):
                         yield Static("Model:", classes="setting-label")
                         yield Select(
                             [
-                                ("Gemini 2.0 Flash (Latest)", "gemini-2.0-flash-exp"),
-                                ("Gemini 1.5 Pro", "gemini-1.5-pro"),
-                                ("Gemini 1.5 Flash", "gemini-1.5-flash"),
+                                ("Gemini 1.5 Flash (Recommended)", "gemini-1.5-flash-latest"),
+                                ("Gemini 1.5 Pro", "gemini-1.5-pro-latest"),
                                 ("Gemini 1.5 Flash-8B", "gemini-1.5-flash-8b"),
                                 ("Gemini Pro", "gemini-pro"),
-                                ("Gemini Pro Vision", "gemini-pro-vision"),
+                                ("Gemini 2.0 Flash Exp", "gemini-2.0-flash-exp"),
                             ],
-                            value="gemini-2.0-flash-exp",
+                            value="gemini-1.5-flash-latest",
                             id="select-google-model",
                         )
 
@@ -1216,7 +1215,7 @@ class SettingsScreen(BaseScreen):
                 'anthropic_model': get_select_value("select-anthropic-model", "claude-3-5-sonnet-20241022"),
                 # Google
                 'google_key': get_input_value("input-google-key"),
-                'google_model': get_select_value("select-google-model", "gemini-2.0-flash-exp"),
+                'google_model': get_select_value("select-google-model", "gemini-1.5-flash-latest"),
                 # xAI
                 'xai_key': get_input_value("input-xai-key"),
                 'xai_model': get_select_value("select-xai-model", "grok-2"),

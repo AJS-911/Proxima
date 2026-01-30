@@ -124,6 +124,18 @@ class TUIState:
     current_thinking_content: str = ""
     thinking_history: List[Dict[str, Any]] = field(default_factory=list)
     
+    # AI Chat State (persistent across tab switches)
+    ai_chat_messages: List[Dict[str, Any]] = field(default_factory=list)
+    ai_chat_session_id: Optional[str] = None
+    ai_chat_session_name: Optional[str] = None
+    ai_chat_stats: Dict[str, Any] = field(default_factory=lambda: {
+        'total_messages': 0,
+        'total_tokens': 0,
+        'total_requests': 0,
+        'avg_response_time': 0,
+        'session_start': 0,
+    })
+    
     # ==================== Results State ====================
     latest_result: Optional[ResultInfo] = None
     result_history: List[ResultInfo] = field(default_factory=list)
