@@ -52,8 +52,10 @@ def test_backend_comparison_speedups(monkeypatch):
     """Test comparison between fast and slow backends shows correct speedup factors."""
     monkeypatch.setattr("proxima.benchmarks.runner.ResourceMonitor", lambda: DummyResourceMonitor())
 
-    fast = TimedBackend("lret", delay_ms=3)
-    slow = TimedBackend("cirq", delay_ms=12)
+    # Use larger timing differences for reliable cross-platform tests
+    # The fast backend should be significantly faster to avoid flaky tests
+    fast = TimedBackend("lret", delay_ms=10)
+    slow = TimedBackend("cirq", delay_ms=50)
     registry = SimpleRegistry({"lret": fast, "cirq": slow})
 
     runner = BenchmarkRunner(registry)
