@@ -9,6 +9,7 @@ from typing import Optional
 
 from textual.containers import Horizontal, Vertical, Container
 from textual.widgets import Static, Button, Input, Switch, Select, RadioSet, RadioButton
+from textual.css.query import NoMatches
 from rich.text import Text
 
 from .base import BaseScreen
@@ -132,15 +133,21 @@ class SettingsScreen(BaseScreen):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.llm_mode = "local"  # "local", "openai", "anthropic", "none"
+        self.llm_mode = "none"  # Start with "none" for fastest initial load
+        self._loaded_sections = set()  # Track which sections have been created
+        self._widget_cache = {}  # Cache widget references to avoid repeated queries
+        self._settings_loaded = False  # Track if settings have been loaded
+        self._detection_tasks = {}  # Track background detection tasks
+        self._provider_container = None  # Reference to the dynamic provider container
+        self._cached_llm_settings = {}  # Cache for loaded LLM settings
 
     def compose_main(self):
-        """Compose the settings screen content."""
+        """Compose the settings screen content - OPTIMIZED with lazy loading."""
         from textual.containers import ScrollableContainer
         with ScrollableContainer(classes="main-content settings-container"):
-            # General Settings
+            # General Settings - Always shown (minimal widgets)
             with Container(classes="settings-section"):
-                yield Static("?? General Settings", classes="section-title")
+                yield Static("⚙️ General Settings", classes="section-title")
 
                 with Horizontal(classes="setting-row"):
                     yield Static("Default Backend:", classes="setting-label")
@@ -163,935 +170,51 @@ class SettingsScreen(BaseScreen):
                     yield Static("Auto-save Results:", classes="setting-label")
                     yield Switch(value=True, id="switch-autosave")
 
-            # LLM Settings - SIMPLIFIED AND SEPARATED
+            # AI Assistant Settings - Minimal initial render
             with Container(classes="settings-section"):
-                yield Static("?? AI Assistant Settings", classes="section-title")
+                yield Static("🤖 AI Assistant Settings", classes="section-title")
                 yield Static(
                     "Choose how to connect to an AI assistant for insights and explanations.",
                     classes="section-subtitle",
                 )
 
-                # LLM Mode Selection
+                # LLM Mode Selection - Only the dropdown, no provider sections yet
                 with Horizontal(classes="setting-row"):
                     yield Static("AI Mode:", classes="setting-label")
                     yield Select(
                         [
                             ("Disabled (No AI)", "none"),
                             ("Local LLM (Free, Private)", "local"),
-                            # Major Cloud Providers
                             ("OpenAI API (GPT-4, GPT-4o)", "openai"),
                             ("Anthropic API (Claude)", "anthropic"),
                             ("Google AI (Gemini)", "google"),
                             ("xAI (Grok)", "xai"),
                             ("DeepSeek API", "deepseek"),
                             ("Mistral AI", "mistral"),
-                            ("Cohere API", "cohere"),
-                            ("Perplexity AI", "perplexity"),
                             ("Groq (Fast Inference)", "groq"),
                             ("Together AI", "together"),
-                            ("Fireworks AI", "fireworks"),
-                            ("Replicate", "replicate"),
-                            ("Anyscale", "anyscale"),
-                            # Enterprise / Cloud Platforms
+                            ("OpenRouter", "openrouter"),
+                            ("Cohere API", "cohere"),
+                            ("Perplexity AI", "perplexity"),
                             ("Azure OpenAI", "azure_openai"),
                             ("AWS Bedrock", "aws_bedrock"),
-                            ("Google Vertex AI", "vertex_ai"),
-                            ("IBM watsonx.ai", "watsonx"),
-                            ("Oracle OCI AI", "oracle_ai"),
-                            ("Alibaba Cloud Qwen", "alibaba_qwen"),
-                            ("Hugging Face Inference", "huggingface"),
-                            # Open Source / Self-Hosted
-                            ("Ollama (Local)", "ollama"),
-                            ("LM Studio (Local)", "lmstudio"),
-                            ("llama.cpp (Local)", "llamacpp"),
-                            ("vLLM (Self-Hosted)", "vllm"),
-                            ("Text Generation WebUI", "textgen_webui"),
-                            ("LocalAI", "localai"),
-                            ("OpenRouter", "openrouter"),
-                            ("Oobabooga", "oobabooga"),
-                            # Specialized Providers
-                            ("AI21 Labs (Jamba)", "ai21"),
-                            ("Reka AI", "reka"),
-                            ("Writer AI", "writer"),
-                            ("Lepton AI", "lepton"),
-                            ("Baseten", "baseten"),
-                            ("Modal", "modal"),
-                            ("RunPod", "runpod"),
-                            ("Lambda Labs", "lambda"),
-                            ("SambaNova", "sambanova"),
-                            ("Cerebras", "cerebras"),
-                            ("Novita AI", "novita"),
-                            ("Monster API", "monster"),
+                            ("Hugging Face", "huggingface"),
+                            ("Fireworks AI", "fireworks"),
+                            ("Replicate", "replicate"),
+                            ("AI21 Labs", "ai21"),
                             ("DeepInfra", "deepinfra"),
-                            ("Hyperbolic", "hyperbolic"),
-                            ("Kluster.ai", "kluster"),
-                            ("Friendli AI", "friendli"),
+                            ("Ollama (Local)", "ollama"),
+                            ("Other Provider...", "custom"),
                         ],
                         value="none",
                         id="select-llm-mode",
                     )
 
-                # Option 1: Local LLM Settings
-                with Container(classes="subsection", id="local-llm-settings"):
-                    yield Static("?? Local LLM Settings (Ollama)", classes="subsection-title")
-                    yield Static(
-                        "Runs on your computer. Free and private. Requires Ollama installed.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Ollama URL:", classes="setting-label")
-                        yield Input(
-                            value="http://localhost:11434",
-                            placeholder="http://localhost:11434",
-                            classes="setting-input-wide",
-                            id="input-ollama-url",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model Name:", classes="setting-label")
-                        yield Input(
-                            value="llama3",
-                            placeholder="llama3, mistral, codellama...",
-                            classes="setting-input",
-                            id="input-local-model",
-                        )
-
-                    yield Button(
-                        "🔗 Test Connection",
-                        id="btn-test-local",
-                        variant="primary",
-                    )
-
-                # Option 2: OpenAI API Settings
-                with Container(classes="subsection", id="openai-settings"):
-                    yield Static("🔑 OpenAI API Settings", classes="subsection-title")
-                    yield Static(
-                        "Uses OpenAI's servers. Requires API key. Costs money per use.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="sk-...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-openai-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("GPT-4o (Recommended)", "gpt-4o"),
-                                ("GPT-4o Mini (Cheaper)", "gpt-4o-mini"),
-                                ("GPT-4 Turbo", "gpt-4-turbo"),
-                                ("GPT-3.5 Turbo (Cheapest)", "gpt-3.5-turbo"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="gpt-4o-mini",
-                            id="select-openai-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-openai-custom-model",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Button(
-                            "🔍 Auto-Detect Models",
-                            id="btn-detect-openai",
-                            variant="default",
-                        )
-                        yield Button(
-                            "Verify API Key",
-                            id="btn-test-openai",
-                            variant="primary",
-                        )
-
-                # Option 3: Anthropic API Settings
-                with Container(classes="subsection", id="anthropic-settings"):
-                    yield Static("🔑 Anthropic API Settings", classes="subsection-title")
-                    yield Static(
-                        "Uses Anthropic's Claude. Requires API key. Costs money per use.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="sk-ant-...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-anthropic-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Claude 3.5 Sonnet (Recommended)", "claude-3-5-sonnet-20241022"),
-                                ("Claude 3.5 Haiku (Faster)", "claude-3-5-haiku-20241022"),
-                                ("Claude 3 Opus (Most Capable)", "claude-3-opus-20240229"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="claude-3-5-sonnet-20241022",
-                            id="select-anthropic-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-anthropic-custom-model",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Button(
-                            "🔍 Auto-Detect Models",
-                            id="btn-detect-anthropic",
-                            variant="default",
-                        )
-                        yield Button(
-                            "Verify API Key",
-                            id="btn-test-anthropic",
-                            variant="primary",
-                        )
-
-                # Google Gemini API Settings
-                with Container(classes="subsection", id="google-settings"):
-                    yield Static("🔷 Google AI (Gemini) Settings", classes="subsection-title")
-                    yield Static(
-                        "Google's Gemini models. Requires API key from Google AI Studio.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="AIza...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-google-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Gemini 1.5 Flash (Recommended)", "gemini-1.5-flash-latest"),
-                                ("Gemini 1.5 Pro", "gemini-1.5-pro-latest"),
-                                ("Gemini 1.5 Flash-8B", "gemini-1.5-flash-8b"),
-                                ("Gemini Pro", "gemini-pro"),
-                                ("Gemini 2.0 Flash Exp", "gemini-2.0-flash-exp"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="gemini-1.5-flash-latest",
-                            id="select-google-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-google-custom-model",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Button(
-                            "🔍 Auto-Detect Models",
-                            id="btn-detect-google",
-                            variant="default",
-                        )
-                        yield Button(
-                            "Verify API Key",
-                            id="btn-test-google",
-                            variant="primary",
-                        )
-
-                # xAI Grok Settings
-                with Container(classes="subsection", id="xai-settings"):
-                    yield Static("🤖 xAI (Grok) Settings", classes="subsection-title")
-                    yield Static(
-                        "xAI's Grok models. Requires API key from x.ai.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="xai-...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-xai-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Grok-2 (Latest)", "grok-2"),
-                                ("Grok-2 Vision", "grok-2-vision"),
-                                ("Grok-2 Mini", "grok-2-mini"),
-                                ("Grok-Beta", "grok-beta"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="grok-2",
-                            id="select-xai-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-xai-custom-model",
-                        )
-
-                    yield Button(
-                        "Verify API Key",
-                        id="btn-test-xai",
-                        variant="primary",
-                    )
-
-                # DeepSeek Settings
-                with Container(classes="subsection", id="deepseek-settings"):
-                    yield Static("🔮 DeepSeek API Settings", classes="subsection-title")
-                    yield Static(
-                        "DeepSeek's powerful reasoning models. Very cost-effective.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="sk-...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-deepseek-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("DeepSeek-V3 (Latest)", "deepseek-chat"),
-                                ("DeepSeek-R1 (Reasoning)", "deepseek-reasoner"),
-                                ("DeepSeek Coder V2", "deepseek-coder"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="deepseek-chat",
-                            id="select-deepseek-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-deepseek-custom-model",
-                        )
-
-                    yield Button(
-                        "Verify API Key",
-                        id="btn-test-deepseek",
-                        variant="primary",
-                    )
-
-                # Mistral AI Settings
-                with Container(classes="subsection", id="mistral-settings"):
-                    yield Static("🌊 Mistral AI Settings", classes="subsection-title")
-                    yield Static(
-                        "Mistral's efficient models. Good balance of speed and quality.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-mistral-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Mistral Large (Latest)", "mistral-large-latest"),
-                                ("Mistral Medium", "mistral-medium-latest"),
-                                ("Mistral Small", "mistral-small-latest"),
-                                ("Mixtral 8x7B", "open-mixtral-8x7b"),
-                                ("Mixtral 8x22B", "open-mixtral-8x22b"),
-                                ("Codestral", "codestral-latest"),
-                                ("Pixtral Large", "pixtral-large-latest"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="mistral-large-latest",
-                            id="select-mistral-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-mistral-custom-model",
-                        )
-
-                    yield Button(
-                        "Verify API Key",
-                        id="btn-test-mistral",
-                        variant="primary",
-                    )
-
-                # Groq Settings (Fast Inference)
-                with Container(classes="subsection", id="groq-settings"):
-                    yield Static("⚡ Groq (Fast Inference) Settings", classes="subsection-title")
-                    yield Static(
-                        "Ultra-fast inference on LPU. Free tier available.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="gsk_...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-groq-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Llama 3.3 70B Versatile", "llama-3.3-70b-versatile"),
-                                ("Llama 3.1 70B", "llama-3.1-70b-versatile"),
-                                ("Llama 3.1 8B", "llama-3.1-8b-instant"),
-                                ("Mixtral 8x7B", "mixtral-8x7b-32768"),
-                                ("Gemma 2 9B", "gemma2-9b-it"),
-                                ("DeepSeek R1 Distill Llama 70B", "deepseek-r1-distill-llama-70b"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="llama-3.3-70b-versatile",
-                            id="select-groq-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-groq-custom-model",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Button(
-                            "🔍 Auto-Detect Models",
-                            id="btn-detect-groq",
-                            variant="default",
-                        )
-                        yield Button(
-                            "Verify API Key",
-                            id="btn-test-groq",
-                            variant="primary",
-                        )
-
-                # Together AI Settings
-                with Container(classes="subsection", id="together-settings"):
-                    yield Static("🤝 Together AI Settings", classes="subsection-title")
-                    yield Static(
-                        "Access to 100+ open models. Competitive pricing.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-together-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Llama 3.3 70B Turbo", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
-                                ("Llama 3.1 405B", "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo"),
-                                ("DeepSeek V3", "deepseek-ai/DeepSeek-V3"),
-                                ("Qwen 2.5 72B", "Qwen/Qwen2.5-72B-Instruct-Turbo"),
-                                ("Mixtral 8x22B", "mistralai/Mixtral-8x22B-Instruct-v0.1"),
-                                ("WizardLM 2 8x22B", "microsoft/WizardLM-2-8x22B"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="meta-llama/Llama-3.3-70B-Instruct-Turbo",
-                            id="select-together-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-together-custom-model",
-                        )
-
-                    yield Button(
-                        "Verify API Key",
-                        id="btn-test-together",
-                        variant="primary",
-                    )
-
-                # OpenRouter Settings
-                with Container(classes="subsection", id="openrouter-settings"):
-                    yield Static("🔀 OpenRouter Settings", classes="subsection-title")
-                    yield Static(
-                        "Unified API for 100+ models from multiple providers.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="sk-or-...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-openrouter-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Auto (Best Available)", "openrouter/auto"),
-                                ("GPT-4o", "openai/gpt-4o"),
-                                ("Claude 3.5 Sonnet", "anthropic/claude-3.5-sonnet"),
-                                ("Gemini Pro 1.5", "google/gemini-pro-1.5"),
-                                ("Llama 3.1 405B", "meta-llama/llama-3.1-405b-instruct"),
-                                ("DeepSeek V3", "deepseek/deepseek-chat"),
-                                ("Perplexity Online", "perplexity/llama-3.1-sonar-large-128k-online"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="openrouter/auto",
-                            id="select-openrouter-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-openrouter-custom-model",
-                        )
-
-                    yield Button(
-                        "Verify API Key",
-                        id="btn-test-openrouter",
-                        variant="primary",
-                    )
-
-                # Cohere Settings
-                with Container(classes="subsection", id="cohere-settings"):
-                    yield Static("🔶 Cohere API Settings", classes="subsection-title")
-                    yield Static(
-                        "Cohere's Command models. Good for enterprise use.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-cohere-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Command R+ (Latest)", "command-r-plus"),
-                                ("Command R", "command-r"),
-                                ("Command Light", "command-light"),
-                                ("Command Nightly", "command-nightly"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="command-r-plus",
-                            id="select-cohere-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-cohere-custom-model",
-                        )
-
-                    yield Button(
-                        "Verify API Key",
-                        id="btn-test-cohere",
-                        variant="primary",
-                    )
-
-                # Perplexity Settings
-                with Container(classes="subsection", id="perplexity-settings"):
-                    yield Static("🔍 Perplexity AI Settings", classes="subsection-title")
-                    yield Static(
-                        "Models with real-time internet search capability.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="pplx-...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-perplexity-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Sonar Large Online", "llama-3.1-sonar-large-128k-online"),
-                                ("Sonar Small Online", "llama-3.1-sonar-small-128k-online"),
-                                ("Sonar Large Chat", "llama-3.1-sonar-large-128k-chat"),
-                                ("Sonar Huge", "llama-3.1-sonar-huge-128k-online"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="llama-3.1-sonar-large-128k-online",
-                            id="select-perplexity-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-perplexity-custom-model",
-                        )
-
-                    yield Button(
-                        "Verify API Key",
-                        id="btn-test-perplexity",
-                        variant="primary",
-                    )
-
-                # Azure OpenAI Settings
-                with Container(classes="subsection", id="azure-openai-settings"):
-                    yield Static("☁️ Azure OpenAI Settings", classes="subsection-title")
-                    yield Static(
-                        "Enterprise OpenAI via Azure. Requires Azure subscription.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-azure-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Endpoint:", classes="setting-label")
-                        yield Input(
-                            placeholder="https://your-resource.openai.azure.com/",
-                            classes="setting-input-wide",
-                            id="input-azure-endpoint",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Deployment:", classes="setting-label")
-                        yield Input(
-                            placeholder="gpt-4-deployment",
-                            classes="setting-input",
-                            id="input-azure-deployment",
-                        )
-
-                    yield Button(
-                        "Verify Connection",
-                        id="btn-test-azure",
-                        variant="primary",
-                    )
-
-                # AWS Bedrock Settings
-                with Container(classes="subsection", id="aws-bedrock-settings"):
-                    yield Static("🔶 AWS Bedrock Settings", classes="subsection-title")
-                    yield Static(
-                        "Access to Claude, Llama, Titan via AWS. Requires AWS credentials.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Access Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="AKIA...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-aws-access-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Secret Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-aws-secret-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Region:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("US East (N. Virginia)", "us-east-1"),
-                                ("US West (Oregon)", "us-west-2"),
-                                ("EU (Frankfurt)", "eu-central-1"),
-                                ("Asia Pacific (Tokyo)", "ap-northeast-1"),
-                            ],
-                            value="us-east-1",
-                            id="select-aws-region",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Claude 3.5 Sonnet", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
-                                ("Claude 3.5 Haiku", "anthropic.claude-3-5-haiku-20241022-v1:0"),
-                                ("Llama 3.1 70B", "meta.llama3-1-70b-instruct-v1:0"),
-                                ("Amazon Titan Text", "amazon.titan-text-premier-v1:0"),
-                                ("Mistral Large", "mistral.mistral-large-2407-v1:0"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="anthropic.claude-3-5-sonnet-20241022-v2:0",
-                            id="select-aws-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-aws-custom-model",
-                        )
-
-                    yield Button(
-                        "Verify Credentials",
-                        id="btn-test-aws",
-                        variant="primary",
-                    )
-
-                # Hugging Face Settings
-                with Container(classes="subsection", id="huggingface-settings"):
-                    yield Static("🤗 Hugging Face Inference Settings", classes="subsection-title")
-                    yield Static(
-                        "Access to thousands of models on Hugging Face Hub.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Token:", classes="setting-label")
-                        yield Input(
-                            placeholder="hf_...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-hf-token",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model ID:", classes="setting-label")
-                        yield Input(
-                            placeholder="meta-llama/Llama-3.1-8B-Instruct",
-                            classes="setting-input-wide",
-                            id="input-hf-model",
-                        )
-
-                    yield Button(
-                        "Verify Token",
-                        id="btn-test-hf",
-                        variant="primary",
-                    )
-
-                # Fireworks AI Settings
-                with Container(classes="subsection", id="fireworks-settings"):
-                    yield Static("🎆 Fireworks AI Settings", classes="subsection-title")
-                    yield Static(
-                        "Fast inference with competitive pricing. Good for coding models.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="fw_...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-fireworks-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Llama 3.1 405B", "accounts/fireworks/models/llama-v3p1-405b-instruct"),
-                                ("Llama 3.1 70B", "accounts/fireworks/models/llama-v3p1-70b-instruct"),
-                                ("DeepSeek V3", "accounts/fireworks/models/deepseek-v3"),
-                                ("Qwen 2.5 72B", "accounts/fireworks/models/qwen2p5-72b-instruct"),
-                                ("Mixtral 8x22B", "accounts/fireworks/models/mixtral-8x22b-instruct"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="accounts/fireworks/models/llama-v3p1-70b-instruct",
-                            id="select-fireworks-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-fireworks-custom-model",
-                        )
-
-                    yield Button(
-                        "Verify API Key",
-                        id="btn-test-fireworks",
-                        variant="primary",
-                    )
-
-                # Replicate Settings
-                with Container(classes="subsection", id="replicate-settings"):
-                    yield Static("🔄 Replicate Settings", classes="subsection-title")
-                    yield Static(
-                        "Run open-source models in the cloud. Pay per second.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Token:", classes="setting-label")
-                        yield Input(
-                            placeholder="r8_...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-replicate-token",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Input(
-                            placeholder="meta/llama-2-70b-chat",
-                            classes="setting-input-wide",
-                            id="input-replicate-model",
-                        )
-
-                    yield Button(
-                        "Verify Token",
-                        id="btn-test-replicate",
-                        variant="primary",
-                    )
-
-                # AI21 Labs Settings
-                with Container(classes="subsection", id="ai21-settings"):
-                    yield Static("🧬 AI21 Labs (Jamba) Settings", classes="subsection-title")
-                    yield Static(
-                        "Jamba - SSM-Transformer hybrid with 256K context.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-ai21-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Jamba 1.5 Large", "jamba-1.5-large"),
-                                ("Jamba 1.5 Mini", "jamba-1.5-mini"),
-                                ("Jamba Instruct", "jamba-instruct"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="jamba-1.5-large",
-                            id="select-ai21-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-ai21-custom-model",
-                        )
-
-                    yield Button(
-                        "Verify API Key",
-                        id="btn-test-ai21",
-                        variant="primary",
-                    )
-
-                # DeepInfra Settings
-                with Container(classes="subsection", id="deepinfra-settings"):
-                    yield Static("🚀 DeepInfra Settings", classes="subsection-title")
-                    yield Static(
-                        "Fast, scalable inference for open models. Great pricing.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-deepinfra-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model:", classes="setting-label")
-                        yield Select(
-                            [
-                                ("Llama 3.1 70B", "meta-llama/Meta-Llama-3.1-70B-Instruct"),
-                                ("Mixtral 8x22B", "mistralai/Mixtral-8x22B-Instruct-v0.1"),
-                                ("Qwen 2.5 72B", "Qwen/Qwen2.5-72B-Instruct"),
-                                ("DeepSeek V3", "deepseek-ai/DeepSeek-V3"),
-                                ("Phi-3 Medium", "microsoft/Phi-3-medium-128k-instruct"),
-                                ("📝 Enter custom model...", "__custom__"),
-                            ],
-                            value="meta-llama/Meta-Llama-3.1-70B-Instruct",
-                            id="select-deepinfra-model",
-                        )
-                        yield Input(
-                            placeholder="Custom model name",
-                            classes="setting-input custom-model-input",
-                            id="input-deepinfra-custom-model",
-                        )
-
-                    yield Button(
-                        "Verify API Key",
-                        id="btn-test-deepinfra",
-                        variant="primary",
-                    )
-
-                # Generic/Custom API Settings (for additional providers)
-                with Container(classes="subsection", id="custom-api-settings"):
-                    yield Static("⚙️ Custom API Settings", classes="subsection-title")
-                    yield Static(
-                        "Configure any OpenAI-compatible API endpoint.",
-                        classes="hint-text",
-                    )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Base URL:", classes="setting-label")
-                        yield Input(
-                            placeholder="https://api.example.com/v1",
-                            classes="setting-input-wide",
-                            id="input-custom-base-url",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("API Key:", classes="setting-label")
-                        yield Input(
-                            placeholder="...",
-                            password=True,
-                            classes="api-key-input",
-                            id="input-custom-key",
-                        )
-
-                    with Horizontal(classes="setting-row"):
-                        yield Static("Model Name:", classes="setting-label")
-                        yield Input(
-                            placeholder="model-name",
-                            classes="setting-input",
-                            id="input-custom-model",
-                        )
-
-                    yield Button(
-                        "Test Connection",
-                        id="btn-test-custom",
-                        variant="primary",
-                    )
-
-                # AI Thinking Panel Access
-                with Container(classes="subsection", id="ai-thinking-settings"):
+                # DYNAMIC PROVIDER CONTAINER - Will be populated lazily
+                yield Container(id="provider-settings-container", classes="subsection")
+
+                # AI Thinking Panel - Always shown (minimal)
+                with Container(classes="subsection"):
                     yield Static("🧠 AI Thinking Panel", classes="subsection-title")
                     yield Static(
                         "View what the AI is thinking in real-time. Shows prompts, responses, and token usage.",
@@ -1122,10 +245,6 @@ class SettingsScreen(BaseScreen):
                             ("Sunset Glow", "sunset-glow"),
                             ("Arctic Ice", "arctic-ice"),
                             ("Neon Nights", "neon-nights"),
-                            ("Midnight Rose", "midnight-rose"),
-                            ("Golden Hour", "golden-hour"),
-                            ("Emerald City", "emerald-city"),
-                            ("Violet Dreams", "violet-dreams"),
                             ("Light Mode", "light-mode"),
                         ],
                         value="proxima-dark",
@@ -1146,6 +265,358 @@ class SettingsScreen(BaseScreen):
                 yield Button("🔄 Reset to Defaults", id="btn-reset", classes="action-btn")
                 yield Button("📤 Export Config", id="btn-export", classes="action-btn")
                 yield Button("📥 Import Config", id="btn-import", classes="action-btn")
+
+    def _create_provider_widgets(self, mode: str) -> list:
+        """Create widgets for a specific provider - called lazily on demand."""
+        widgets = []
+        
+        if mode == "none":
+            return widgets
+        
+        # Provider configurations - defines what widgets each provider needs
+        PROVIDER_CONFIGS = {
+            "local": {
+                "title": "🖥️ Local LLM Settings (Ollama)",
+                "hint": "Runs on your computer. Free and private. Requires Ollama installed.",
+                "fields": [
+                    {"type": "input", "label": "Ollama URL:", "id": "input-ollama-url", "value": "http://localhost:11434", "wide": True},
+                    {"type": "input", "label": "Model Name:", "id": "input-local-model", "value": "llama3", "placeholder": "llama3, mistral, codellama..."},
+                ],
+                "buttons": [{"label": "🔗 Test Connection", "id": "btn-test-local", "variant": "primary"}],
+            },
+            "ollama": {
+                "title": "🖥️ Ollama Settings",
+                "hint": "Local LLM server. Free and private.",
+                "fields": [
+                    {"type": "input", "label": "Ollama URL:", "id": "input-ollama-url", "value": "http://localhost:11434", "wide": True},
+                    {"type": "input", "label": "Model Name:", "id": "input-local-model", "value": "llama3"},
+                ],
+                "buttons": [{"label": "🔗 Test Connection", "id": "btn-test-local", "variant": "primary"}],
+            },
+            "openai": {
+                "title": "🔑 OpenAI API Settings",
+                "hint": "Uses OpenAI's servers. Requires API key.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-openai-key", "password": True, "placeholder": "sk-..."},
+                    {"type": "select", "label": "Model:", "id": "select-openai-model", "options": [
+                        ("GPT-4o (Recommended)", "gpt-4o"),
+                        ("GPT-4o Mini (Cheaper)", "gpt-4o-mini"),
+                        ("GPT-4 Turbo", "gpt-4-turbo"),
+                        ("GPT-3.5 Turbo", "gpt-3.5-turbo"),
+                    ], "value": "gpt-4o-mini"},
+                ],
+                "buttons": [
+                    {"label": "🔍 Auto-Detect Models", "id": "btn-detect-openai", "variant": "default"},
+                    {"label": "Verify API Key", "id": "btn-test-openai", "variant": "primary"},
+                ],
+            },
+            "anthropic": {
+                "title": "🔑 Anthropic API Settings",
+                "hint": "Uses Anthropic's Claude models.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-anthropic-key", "password": True, "placeholder": "sk-ant-..."},
+                    {"type": "select", "label": "Model:", "id": "select-anthropic-model", "options": [
+                        ("Claude 3.5 Sonnet (Recommended)", "claude-3-5-sonnet-20241022"),
+                        ("Claude 3.5 Haiku (Faster)", "claude-3-5-haiku-20241022"),
+                        ("Claude 3 Opus", "claude-3-opus-20240229"),
+                    ], "value": "claude-3-5-sonnet-20241022"},
+                ],
+                "buttons": [
+                    {"label": "🔍 Auto-Detect Models", "id": "btn-detect-anthropic", "variant": "default"},
+                    {"label": "Verify API Key", "id": "btn-test-anthropic", "variant": "primary"},
+                ],
+            },
+            "google": {
+                "title": "🔷 Google AI (Gemini) Settings",
+                "hint": "Google's Gemini models. Requires API key from Google AI Studio.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-google-key", "password": True, "placeholder": "AIza..."},
+                    {"type": "select", "label": "Model:", "id": "select-google-model", "options": [
+                        ("Gemini 1.5 Flash (Recommended)", "gemini-1.5-flash-latest"),
+                        ("Gemini 1.5 Pro", "gemini-1.5-pro-latest"),
+                        ("Gemini 2.0 Flash", "gemini-2.0-flash-exp"),
+                        ("Gemini Pro", "gemini-pro"),
+                    ], "value": "gemini-1.5-flash-latest"},
+                ],
+                "buttons": [
+                    {"label": "🔍 Auto-Detect Models", "id": "btn-detect-google", "variant": "default"},
+                    {"label": "Verify API Key", "id": "btn-test-google", "variant": "primary"},
+                ],
+            },
+            "xai": {
+                "title": "🤖 xAI (Grok) Settings",
+                "hint": "xAI's Grok models.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-xai-key", "password": True, "placeholder": "xai-..."},
+                    {"type": "select", "label": "Model:", "id": "select-xai-model", "options": [
+                        ("Grok-2 (Latest)", "grok-2"),
+                        ("Grok-2 Mini", "grok-2-mini"),
+                    ], "value": "grok-2"},
+                ],
+                "buttons": [{"label": "Verify API Key", "id": "btn-test-xai", "variant": "primary"}],
+            },
+            "deepseek": {
+                "title": "🔮 DeepSeek API Settings",
+                "hint": "DeepSeek's powerful reasoning models. Very cost-effective.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-deepseek-key", "password": True, "placeholder": "sk-..."},
+                    {"type": "select", "label": "Model:", "id": "select-deepseek-model", "options": [
+                        ("DeepSeek-V3 (Latest)", "deepseek-chat"),
+                        ("DeepSeek-R1 (Reasoning)", "deepseek-reasoner"),
+                        ("DeepSeek Coder", "deepseek-coder"),
+                    ], "value": "deepseek-chat"},
+                ],
+                "buttons": [{"label": "Verify API Key", "id": "btn-test-deepseek", "variant": "primary"}],
+            },
+            "mistral": {
+                "title": "🌊 Mistral AI Settings",
+                "hint": "Mistral's efficient models.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-mistral-key", "password": True},
+                    {"type": "select", "label": "Model:", "id": "select-mistral-model", "options": [
+                        ("Mistral Large", "mistral-large-latest"),
+                        ("Mistral Small", "mistral-small-latest"),
+                        ("Codestral", "codestral-latest"),
+                    ], "value": "mistral-large-latest"},
+                ],
+                "buttons": [{"label": "Verify API Key", "id": "btn-test-mistral", "variant": "primary"}],
+            },
+            "groq": {
+                "title": "⚡ Groq (Fast Inference) Settings",
+                "hint": "Ultra-fast inference. Free tier available.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-groq-key", "password": True, "placeholder": "gsk_..."},
+                    {"type": "select", "label": "Model:", "id": "select-groq-model", "options": [
+                        ("Llama 3.3 70B", "llama-3.3-70b-versatile"),
+                        ("Llama 3.1 70B", "llama-3.1-70b-versatile"),
+                        ("Mixtral 8x7B", "mixtral-8x7b-32768"),
+                    ], "value": "llama-3.3-70b-versatile"},
+                ],
+                "buttons": [
+                    {"label": "🔍 Auto-Detect Models", "id": "btn-detect-groq", "variant": "default"},
+                    {"label": "Verify API Key", "id": "btn-test-groq", "variant": "primary"},
+                ],
+            },
+            "together": {
+                "title": "🤝 Together AI Settings",
+                "hint": "Access to 100+ open models.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-together-key", "password": True},
+                    {"type": "select", "label": "Model:", "id": "select-together-model", "options": [
+                        ("Llama 3.3 70B Turbo", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+                        ("DeepSeek V3", "deepseek-ai/DeepSeek-V3"),
+                        ("Qwen 2.5 72B", "Qwen/Qwen2.5-72B-Instruct-Turbo"),
+                    ], "value": "meta-llama/Llama-3.3-70B-Instruct-Turbo"},
+                ],
+                "buttons": [{"label": "Verify API Key", "id": "btn-test-together", "variant": "primary"}],
+            },
+            "openrouter": {
+                "title": "🔀 OpenRouter Settings",
+                "hint": "Unified API for 100+ models.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-openrouter-key", "password": True, "placeholder": "sk-or-..."},
+                    {"type": "select", "label": "Model:", "id": "select-openrouter-model", "options": [
+                        ("Auto (Best Available)", "openrouter/auto"),
+                        ("GPT-4o", "openai/gpt-4o"),
+                        ("Claude 3.5 Sonnet", "anthropic/claude-3.5-sonnet"),
+                    ], "value": "openrouter/auto"},
+                ],
+                "buttons": [{"label": "Verify API Key", "id": "btn-test-openrouter", "variant": "primary"}],
+            },
+            "cohere": {
+                "title": "🔶 Cohere API Settings",
+                "hint": "Cohere's Command models.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-cohere-key", "password": True},
+                    {"type": "select", "label": "Model:", "id": "select-cohere-model", "options": [
+                        ("Command R+", "command-r-plus"),
+                        ("Command R", "command-r"),
+                    ], "value": "command-r-plus"},
+                ],
+                "buttons": [{"label": "Verify API Key", "id": "btn-test-cohere", "variant": "primary"}],
+            },
+            "perplexity": {
+                "title": "🔍 Perplexity AI Settings",
+                "hint": "Models with real-time search.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-perplexity-key", "password": True, "placeholder": "pplx-..."},
+                    {"type": "select", "label": "Model:", "id": "select-perplexity-model", "options": [
+                        ("Sonar Large Online", "llama-3.1-sonar-large-128k-online"),
+                        ("Sonar Small Online", "llama-3.1-sonar-small-128k-online"),
+                    ], "value": "llama-3.1-sonar-large-128k-online"},
+                ],
+                "buttons": [{"label": "Verify API Key", "id": "btn-test-perplexity", "variant": "primary"}],
+            },
+            "azure_openai": {
+                "title": "☁️ Azure OpenAI Settings",
+                "hint": "Enterprise OpenAI via Azure.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-azure-key", "password": True},
+                    {"type": "input", "label": "Endpoint:", "id": "input-azure-endpoint", "placeholder": "https://your-resource.openai.azure.com/", "wide": True},
+                    {"type": "input", "label": "Deployment:", "id": "input-azure-deployment", "placeholder": "gpt-4-deployment"},
+                ],
+                "buttons": [{"label": "Verify Connection", "id": "btn-test-azure", "variant": "primary"}],
+            },
+            "aws_bedrock": {
+                "title": "🔶 AWS Bedrock Settings",
+                "hint": "Access Claude, Llama, Titan via AWS.",
+                "fields": [
+                    {"type": "input", "label": "Access Key:", "id": "input-aws-access-key", "password": True, "placeholder": "AKIA..."},
+                    {"type": "input", "label": "Secret Key:", "id": "input-aws-secret-key", "password": True},
+                    {"type": "select", "label": "Region:", "id": "select-aws-region", "options": [
+                        ("US East", "us-east-1"),
+                        ("US West", "us-west-2"),
+                        ("EU Frankfurt", "eu-central-1"),
+                    ], "value": "us-east-1"},
+                    {"type": "select", "label": "Model:", "id": "select-aws-model", "options": [
+                        ("Claude 3.5 Sonnet", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
+                        ("Llama 3.1 70B", "meta.llama3-1-70b-instruct-v1:0"),
+                    ], "value": "anthropic.claude-3-5-sonnet-20241022-v2:0"},
+                ],
+                "buttons": [{"label": "Verify Credentials", "id": "btn-test-aws", "variant": "primary"}],
+            },
+            "huggingface": {
+                "title": "🤗 Hugging Face Settings",
+                "hint": "Access to thousands of models.",
+                "fields": [
+                    {"type": "input", "label": "API Token:", "id": "input-hf-token", "password": True, "placeholder": "hf_..."},
+                    {"type": "input", "label": "Model ID:", "id": "input-hf-model", "placeholder": "meta-llama/Llama-3.1-8B-Instruct", "wide": True},
+                ],
+                "buttons": [{"label": "Verify Token", "id": "btn-test-hf", "variant": "primary"}],
+            },
+            "fireworks": {
+                "title": "🎆 Fireworks AI Settings",
+                "hint": "Fast inference with competitive pricing.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-fireworks-key", "password": True},
+                    {"type": "select", "label": "Model:", "id": "select-fireworks-model", "options": [
+                        ("Llama 3.1 70B", "accounts/fireworks/models/llama-v3p1-70b-instruct"),
+                        ("Mixtral MoE 8x22B", "accounts/fireworks/models/mixtral-8x22b-instruct"),
+                    ], "value": "accounts/fireworks/models/llama-v3p1-70b-instruct"},
+                ],
+                "buttons": [{"label": "Verify API Key", "id": "btn-test-fireworks", "variant": "primary"}],
+            },
+            "replicate": {
+                "title": "🔄 Replicate Settings",
+                "hint": "Run ML models in the cloud.",
+                "fields": [
+                    {"type": "input", "label": "API Token:", "id": "input-replicate-token", "password": True},
+                    {"type": "input", "label": "Model:", "id": "input-replicate-model", "placeholder": "meta/llama-2-70b-chat", "wide": True},
+                ],
+                "buttons": [{"label": "Verify Token", "id": "btn-test-replicate", "variant": "primary"}],
+            },
+            "ai21": {
+                "title": "🔬 AI21 Labs Settings",
+                "hint": "AI21's Jamba models.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-ai21-key", "password": True},
+                    {"type": "select", "label": "Model:", "id": "select-ai21-model", "options": [
+                        ("Jamba 1.5 Large", "jamba-1.5-large"),
+                        ("Jamba 1.5 Mini", "jamba-1.5-mini"),
+                    ], "value": "jamba-1.5-large"},
+                ],
+                "buttons": [{"label": "Verify API Key", "id": "btn-test-ai21", "variant": "primary"}],
+            },
+            "deepinfra": {
+                "title": "🚀 DeepInfra Settings",
+                "hint": "Fast inference for open models.",
+                "fields": [
+                    {"type": "input", "label": "API Key:", "id": "input-deepinfra-key", "password": True},
+                    {"type": "select", "label": "Model:", "id": "select-deepinfra-model", "options": [
+                        ("Llama 3.1 70B", "meta-llama/Meta-Llama-3.1-70B-Instruct"),
+                        ("Mixtral 8x22B", "mistralai/Mixtral-8x22B-Instruct-v0.1"),
+                    ], "value": "meta-llama/Meta-Llama-3.1-70B-Instruct"},
+                ],
+                "buttons": [{"label": "Verify API Key", "id": "btn-test-deepinfra", "variant": "primary"}],
+            },
+            "custom": {
+                "title": "🔧 Custom API Settings",
+                "hint": "Configure any OpenAI-compatible API endpoint.",
+                "fields": [
+                    {"type": "input", "label": "Base URL:", "id": "input-custom-base-url", "placeholder": "https://api.example.com/v1", "wide": True},
+                    {"type": "input", "label": "API Key:", "id": "input-custom-key", "password": True},
+                    {"type": "input", "label": "Model:", "id": "input-custom-model", "placeholder": "model-name"},
+                ],
+                "buttons": [{"label": "Test Connection", "id": "btn-test-custom", "variant": "primary"}],
+            },
+        }
+        
+        config = PROVIDER_CONFIGS.get(mode)
+        if not config:
+            # Fallback to custom for unknown providers
+            config = PROVIDER_CONFIGS.get("custom")
+        
+        # Build widgets from config
+        widgets.append(Static(config["title"], classes="subsection-title"))
+        widgets.append(Static(config["hint"], classes="hint-text"))
+        
+        for field in config.get("fields", []):
+            row = Horizontal(classes="setting-row")
+            label = Static(field["label"], classes="setting-label")
+            
+            if field["type"] == "input":
+                input_widget = Input(
+                    value=field.get("value", ""),
+                    placeholder=field.get("placeholder", ""),
+                    password=field.get("password", False),
+                    classes="setting-input-wide" if field.get("wide") else "api-key-input" if field.get("password") else "setting-input",
+                    id=field["id"],
+                )
+                widgets.append((row, label, input_widget))
+            elif field["type"] == "select":
+                select_widget = Select(
+                    field.get("options", []),
+                    value=field.get("value", ""),
+                    id=field["id"],
+                )
+                widgets.append((row, label, select_widget))
+        
+        # Add buttons
+        if config.get("buttons"):
+            button_row = Horizontal(classes="setting-row")
+            button_widgets = []
+            for btn in config["buttons"]:
+                button_widgets.append(Button(btn["label"], id=btn["id"], variant=btn.get("variant", "default")))
+            widgets.append((button_row, button_widgets))
+        
+        return widgets
+
+    def _populate_provider_container(self, mode: str) -> None:
+        """Lazily populate the provider settings container with widgets for the selected mode."""
+        try:
+            container = self.query_one("#provider-settings-container", Container)
+        except NoMatches:
+            return
+        
+        # Clear existing widgets
+        container.remove_children()
+        
+        if mode == "none":
+            return
+        
+        # Get widgets for the selected provider
+        widgets_data = self._create_provider_widgets(mode)
+        
+        # Mount widgets to the container - IMPORTANT: mount container first, then add children
+        for item in widgets_data:
+            if isinstance(item, tuple):
+                if len(item) == 3:  # (row, label, widget)
+                    row, label, widget = item
+                    # First mount the row to the container
+                    container.mount(row)
+                    # Then mount children to the row (row is now mounted)
+                    row.mount(label)
+                    row.mount(widget)
+                elif len(item) == 2:  # (row, [buttons])
+                    row, button_list = item
+                    # First mount the row to the container
+                    container.mount(row)
+                    # Then mount buttons to the row
+                    for btn in button_list:
+                        row.mount(btn)
+            else:
+                # Direct widget (Static for title/hint)
+                container.mount(item)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Handle select changes."""
@@ -1175,6 +646,10 @@ class SettingsScreen(BaseScreen):
     
     def on_input_changed(self, event: Input.Changed) -> None:
         """Handle input changes - auto-detect models when API key is entered."""
+        # Skip auto-detection during initial settings load to prevent performance issues
+        if not getattr(self, '_settings_loaded', False):
+            return
+            
         input_id = event.input.id
         if not input_id:
             return
@@ -1475,101 +950,19 @@ class SettingsScreen(BaseScreen):
             # This serves as a marker for where theme CSS would be applied
         except Exception:
             pass
-
+    
     def _update_llm_sections(self, mode: str) -> None:
-        """Show/hide LLM sections based on selected mode."""
-        # All provider section IDs
-        all_sections = [
-            "#local-llm-settings",
-            "#openai-settings",
-            "#anthropic-settings",
-            "#google-settings",
-            "#xai-settings",
-            "#deepseek-settings",
-            "#mistral-settings",
-            "#groq-settings",
-            "#together-settings",
-            "#openrouter-settings",
-            "#cohere-settings",
-            "#perplexity-settings",
-            "#azure-openai-settings",
-            "#aws-bedrock-settings",
-            "#huggingface-settings",
-            "#fireworks-settings",
-            "#replicate-settings",
-            "#ai21-settings",
-            "#deepinfra-settings",
-            "#custom-api-settings",
-        ]
+        """Update the provider settings container based on selected mode - uses lazy loading.
         
-        # Mapping from mode to section ID
-        mode_to_section = {
-            "local": "#local-llm-settings",
-            "openai": "#openai-settings",
-            "anthropic": "#anthropic-settings",
-            "google": "#google-settings",
-            "xai": "#xai-settings",
-            "deepseek": "#deepseek-settings",
-            "mistral": "#mistral-settings",
-            "groq": "#groq-settings",
-            "together": "#together-settings",
-            "openrouter": "#openrouter-settings",
-            "cohere": "#cohere-settings",
-            "perplexity": "#perplexity-settings",
-            "azure_openai": "#azure-openai-settings",
-            "aws_bedrock": "#aws-bedrock-settings",
-            "huggingface": "#huggingface-settings",
-            "fireworks": "#fireworks-settings",
-            "replicate": "#replicate-settings",
-            "ai21": "#ai21-settings",
-            "deepinfra": "#deepinfra-settings",
-            # Local providers also use local-llm-settings or custom
-            "ollama": "#local-llm-settings",
-            "lmstudio": "#local-llm-settings",
-            "llamacpp": "#local-llm-settings",
-            "vllm": "#custom-api-settings",
-            "textgen_webui": "#custom-api-settings",
-            "localai": "#custom-api-settings",
-            "oobabooga": "#custom-api-settings",
-            # Specialized providers use custom settings
-            "vertex_ai": "#custom-api-settings",
-            "watsonx": "#custom-api-settings",
-            "oracle_ai": "#custom-api-settings",
-            "alibaba_qwen": "#custom-api-settings",
-            "anyscale": "#custom-api-settings",
-            "reka": "#custom-api-settings",
-            "writer": "#custom-api-settings",
-            "lepton": "#custom-api-settings",
-            "baseten": "#custom-api-settings",
-            "modal": "#custom-api-settings",
-            "runpod": "#custom-api-settings",
-            "lambda": "#custom-api-settings",
-            "sambanova": "#custom-api-settings",
-            "cerebras": "#custom-api-settings",
-            "novita": "#custom-api-settings",
-            "monster": "#custom-api-settings",
-            "hyperbolic": "#custom-api-settings",
-            "kluster": "#custom-api-settings",
-            "friendli": "#custom-api-settings",
-        }
+        Performance optimizations:
+        1. Provider widgets are NOT created in compose_main() - only a single empty container
+        2. Widgets are created on-demand when a provider is selected
+        3. Previous widgets are removed before creating new ones (minimal DOM)
+        """
+        # Update the provider container with new widgets
+        self._populate_provider_container(mode)
         
-        # Hide all sections first
-        for section_id in all_sections:
-            try:
-                section = self.query_one(section_id)
-                section.display = False
-            except Exception:
-                pass  # Section may not exist
-
-        # Show the relevant section based on mode
-        if mode != "none" and mode in mode_to_section:
-            section_id = mode_to_section[mode]
-            try:
-                section = self.query_one(section_id)
-                section.display = True
-            except Exception:
-                pass
-
+        # Update mode tracking
         self.llm_mode = mode
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -1925,10 +1318,216 @@ class SettingsScreen(BaseScreen):
             self.notify(f"✗ Failed to save settings: {e}", severity="error")
     
     def on_mount(self) -> None:
-        """Load saved settings on mount."""
-        self._update_llm_sections("none")
-        self._load_saved_settings()
+        """Load saved settings on mount - highly optimized for performance."""
+        # All sections start hidden via CSS - no need to iterate
+        # Use set_timer for deferred loading to ensure UI is fully rendered first
+        self.set_timer(0.05, self._deferred_load_settings)
     
+    def _deferred_load_settings(self) -> None:
+        """Load settings after UI is rendered - prevents freeze."""
+        if self._settings_loaded:
+            return
+        self._settings_loaded = True
+        # Load settings in chunks to prevent UI blocking
+        self.call_later(self._load_saved_settings_chunked)
+    
+    def _load_saved_settings_chunked(self) -> None:
+        """Load settings in chunks for better responsiveness."""
+        # First load just the critical settings (mode, general)
+        self._load_general_settings()
+        # Then defer loading provider-specific settings
+        self.set_timer(0.02, self._load_provider_settings)
+    
+    def _load_general_settings(self) -> None:
+        """Load general settings first - fast, non-blocking."""
+        try:
+            import json
+            config_path = Path.home() / ".proxima" / "tui_settings.json"
+            
+            if not config_path.exists():
+                return
+            
+            with open(config_path, 'r') as f:
+                settings = json.load(f)
+            
+            # Cache settings for later use
+            self._cached_settings = settings
+            
+            # Apply general settings (fast - only 3 widgets)
+            general = settings.get('general', {})
+            try:
+                if 'backend' in general:
+                    self.query_one("#select-backend", Select).value = general['backend']
+                if 'shots' in general:
+                    self.query_one("#input-shots", Input).value = str(general['shots'])
+                if 'autosave' in general:
+                    self.query_one("#switch-autosave", Switch).value = general['autosave']
+            except Exception:
+                pass
+            
+            # Apply LLM mode (shows correct section)
+            llm = settings.get('llm', {})
+            if 'mode' in llm:
+                try:
+                    self.query_one("#select-llm-mode", Select).value = llm['mode']
+                    self._update_llm_sections(llm['mode'])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    
+    def _load_provider_settings(self) -> None:
+        """Load provider-specific settings - deferred for performance."""
+        if not hasattr(self, '_cached_settings'):
+            return
+        
+        settings = self._cached_settings
+        llm = settings.get('llm', {})
+        mode = llm.get('mode', 'none')
+        
+        # Only load settings for the currently active provider
+        # This avoids touching widgets that aren't visible
+        self._load_active_provider_settings(mode, llm)
+        
+        # Update TUIState if available
+        self._update_tui_state(mode, llm)
+        
+        # Clean up cached settings
+        if hasattr(self, '_cached_settings'):
+            del self._cached_settings
+        
+        # Show notification
+        self.notify("Settings loaded", severity="information", timeout=1)
+    
+    def _load_active_provider_settings(self, mode: str, llm: dict) -> None:
+        """Load only the settings for the currently active provider."""
+        # Helper to safely set input value
+        def set_input(input_id: str, key: str) -> None:
+            try:
+                value = llm.get(key, '')
+                if value:
+                    self.query_one(f"#{input_id}", Input).value = value
+            except Exception:
+                pass
+        
+        # Helper to safely set select value
+        def set_select(select_id: str, key: str) -> None:
+            try:
+                value = llm.get(key, '')
+                if value:
+                    self.query_one(f"#{select_id}", Select).value = value
+            except Exception:
+                pass
+        
+        # Map mode to its settings - only load what's needed
+        if mode in ['local', 'ollama', 'lmstudio', 'llamacpp']:
+            set_input("input-ollama-url", 'ollama_url')
+            set_input("input-local-model", 'local_model')
+        elif mode == 'openai':
+            set_input("input-openai-key", 'openai_key')
+            set_select("select-openai-model", 'openai_model')
+        elif mode == 'anthropic':
+            set_input("input-anthropic-key", 'anthropic_key')
+            set_select("select-anthropic-model", 'anthropic_model')
+        elif mode == 'google':
+            set_input("input-google-key", 'google_key')
+            set_select("select-google-model", 'google_model')
+        elif mode == 'xai':
+            set_input("input-xai-key", 'xai_key')
+            set_select("select-xai-model", 'xai_model')
+        elif mode == 'deepseek':
+            set_input("input-deepseek-key", 'deepseek_key')
+            set_select("select-deepseek-model", 'deepseek_model')
+        elif mode == 'mistral':
+            set_input("input-mistral-key", 'mistral_key')
+            set_select("select-mistral-model", 'mistral_model')
+        elif mode == 'groq':
+            set_input("input-groq-key", 'groq_key')
+            set_select("select-groq-model", 'groq_model')
+        elif mode == 'together':
+            set_input("input-together-key", 'together_key')
+            set_select("select-together-model", 'together_model')
+        elif mode == 'openrouter':
+            set_input("input-openrouter-key", 'openrouter_key')
+            set_select("select-openrouter-model", 'openrouter_model')
+        elif mode == 'cohere':
+            set_input("input-cohere-key", 'cohere_key')
+            set_select("select-cohere-model", 'cohere_model')
+        elif mode == 'perplexity':
+            set_input("input-perplexity-key", 'perplexity_key')
+            set_select("select-perplexity-model", 'perplexity_model')
+        elif mode == 'azure_openai':
+            set_input("input-azure-key", 'azure_key')
+            set_input("input-azure-endpoint", 'azure_endpoint')
+            set_input("input-azure-deployment", 'azure_deployment')
+        elif mode == 'aws_bedrock':
+            set_input("input-aws-access-key", 'aws_access_key')
+            set_input("input-aws-secret-key", 'aws_secret_key')
+            set_select("select-aws-region", 'aws_region')
+            set_select("select-aws-model", 'aws_model')
+        elif mode == 'huggingface':
+            set_input("input-hf-token", 'hf_token')
+            set_input("input-hf-model", 'hf_model')
+        elif mode == 'fireworks':
+            set_input("input-fireworks-key", 'fireworks_key')
+            set_select("select-fireworks-model", 'fireworks_model')
+        elif mode == 'replicate':
+            set_input("input-replicate-token", 'replicate_token')
+            set_input("input-replicate-model", 'replicate_model')
+        elif mode == 'ai21':
+            set_input("input-ai21-key", 'ai21_key')
+            set_select("select-ai21-model", 'ai21_model')
+        elif mode == 'deepinfra':
+            set_input("input-deepinfra-key", 'deepinfra_key')
+            set_select("select-deepinfra-model", 'deepinfra_model')
+        # For other providers, they'll load via custom API settings
+        
+        # Also load thinking enabled switch
+        try:
+            thinking = llm.get('thinking_enabled', False)
+            self.query_one("#switch-thinking-enabled", Switch).value = thinking
+        except Exception:
+            pass
+    
+    def _update_tui_state(self, mode: str, llm: dict) -> None:
+        """Update TUIState with loaded settings."""
+        if not hasattr(self, 'state'):
+            return
+        
+        self.state.llm_provider = mode
+        self.state.thinking_enabled = llm.get('thinking_enabled', False)
+        
+        # Get the model name for the selected provider
+        model_key_map = {
+            'local': 'local_model',
+            'ollama': 'local_model',
+            'lmstudio': 'local_model',
+            'llamacpp': 'local_model',
+            'openai': 'openai_model',
+            'anthropic': 'anthropic_model',
+            'google': 'google_model',
+            'xai': 'xai_model',
+            'deepseek': 'deepseek_model',
+            'mistral': 'mistral_model',
+            'groq': 'groq_model',
+            'together': 'together_model',
+            'openrouter': 'openrouter_model',
+            'cohere': 'cohere_model',
+            'perplexity': 'perplexity_model',
+            'azure_openai': 'azure_deployment',
+            'aws_bedrock': 'aws_model',
+            'huggingface': 'hf_model',
+            'fireworks': 'fireworks_model',
+        }
+        
+        if mode in model_key_map:
+            self.state.llm_model = llm.get(model_key_map[mode], '')
+        else:
+            self.state.llm_model = ''
+        
+        # Mark as connected if we have a valid provider configured
+        self.state.llm_connected = (mode and mode != 'none')
+
     def _load_saved_settings(self) -> None:
         """Load settings from disk if available."""
         try:
