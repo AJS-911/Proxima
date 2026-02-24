@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -49,6 +50,7 @@ class ConsentDecision(Enum):
     APPROVED_ONCE = auto()
     APPROVED_SESSION = auto()
     APPROVED_ALWAYS = auto()
+    PENDING = auto()  # Placeholder while waiting for TUI dialog response
 
 
 @dataclass
@@ -493,12 +495,39 @@ class SafetyManager:
     
     # Blocked commands (never allowed)
     BLOCKED_PATTERNS: List[str] = [
+        # Destructive system commands
         "rm -rf /",
         "del /f /s /q C:\\",
-        "format",
+        "format C:",
         ":(){:|:&};:",  # Fork bomb
         "shutdown",
         "reboot",
+        # Boot / firmware tampering
+        "dd if=.* of=/dev/sd",
+        "dd if=.* of=/dev/nvme",
+        "mkfs\\.",
+        "grub-install",
+        "bcdedit /delete",
+        "bcdedit /set {bootmgr}",
+        "efibootmgr -b .* -B",
+        "fdisk /dev/sd",
+        # Credential / password storage
+        "passwd --stdin",
+        "echo.*>>.*/etc/shadow",
+        "chpasswd",
+        "net user .* /add",
+        "net user .*/password",
+        "credentials.*store",
+        "plaintext.*password.*>",
+        # Security feature disabling
+        "ufw disable",
+        "iptables -F",
+        "setenforce 0",
+        "Set-MpPreference -DisableRealtimeMonitoring",
+        "netsh advfirewall set .* state off",
+        "Disable-WindowsOptionalFeature.*Defender",
+        "sc stop WinDefend",
+        "chmod 777 /",
     ]
     
     def __init__(
@@ -514,11 +543,16 @@ class SafetyManager:
             rollback_manager: Rollback manager for checkpoints
             consent_callback: Callback for getting user consent
             auto_approve_safe: Auto-approve safe operations
-            audit_log_path: Path for audit log file
+            audit_log_path: Path for audit log file. Defaults to
+                ``~/.proxima/logs/admin_audit.log`` when *None*.
         """
         self.rollback_manager = rollback_manager or RollbackManager()
         self.consent_callback = consent_callback
         self.auto_approve_safe = auto_approve_safe
+        if audit_log_path is None:
+            default_dir = os.path.join(os.path.expanduser("~"), ".proxima", "logs")
+            os.makedirs(default_dir, exist_ok=True)
+            audit_log_path = os.path.join(default_dir, "admin_audit.log")
         self.audit_log_path = audit_log_path
         
         self._pending_consents: Dict[str, ConsentRequest] = {}
@@ -565,6 +599,11 @@ class SafetyManager:
     def is_blocked(self, operation: str) -> bool:
         """Check if an operation is blocked.
         
+        Matches each ``BLOCKED_PATTERNS`` entry against *operation*.
+        Entries that contain regex meta-characters (``.*``, ``\\b``, etc.)
+        are evaluated with :func:`re.search`; plain strings use substring
+        matching.
+
         Args:
             operation: Operation string (command, etc.)
             
@@ -572,11 +611,28 @@ class SafetyManager:
             True if blocked
         """
         op_lower = operation.lower()
+        _RE_META = re.compile(r"[.*+?^${}()|\\[\]]")
         for pattern in self.BLOCKED_PATTERNS:
-            if pattern.lower() in op_lower:
-                logger.warning(f"Blocked dangerous operation: {operation}")
-                self._log_audit("blocked_operation", {"operation": operation})
-                return True
+            pat_lower = pattern.lower()
+            try:
+                if _RE_META.search(pattern):
+                    # Pattern contains regex metacharacters — use re.search
+                    if re.search(pat_lower, op_lower):
+                        logger.warning(f"Blocked dangerous operation: {operation}")
+                        self._log_audit("blocked_operation", {"operation": operation, "matched_pattern": pattern})
+                        return True
+                else:
+                    # Plain substring match
+                    if pat_lower in op_lower:
+                        logger.warning(f"Blocked dangerous operation: {operation}")
+                        self._log_audit("blocked_operation", {"operation": operation, "matched_pattern": pattern})
+                        return True
+            except re.error:
+                # Fallback to substring on invalid regex
+                if pat_lower in op_lower:
+                    logger.warning(f"Blocked dangerous operation: {operation}")
+                    self._log_audit("blocked_operation", {"operation": operation, "matched_pattern": pattern})
+                    return True
         return False
     
     def is_safe_operation(self, tool_name: str) -> bool:

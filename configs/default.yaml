@@ -26,3 +26,32 @@ consent:
   auto_approve_local_llm: false
   auto_approve_remote_llm: false
   remember_decisions: false
+
+# Phase 16 — Agent capabilities configuration
+agent:
+  models:
+    large:
+      provider: "ollama"
+      model: "llama2-uncensored"
+      context_window: 4096
+      max_tokens: 2048
+    small:
+      provider: "ollama"
+      model: "llama2-uncensored"
+      context_window: 4096
+      max_tokens: 1024
+  permissions:
+    allowed_tools:
+      - ReadFileTool
+      - ListDirectoryTool
+      - SearchFilesTool
+      - FileInfoTool
+      - GetWorkingDirectoryTool
+      - GitStatusTool
+      - GitLogTool
+      - GitDiffTool
+    yolo_mode: false
+  session:
+    storage_dir: ".proxima/sessions"
+    auto_summarize: true
+    max_sessions: 50

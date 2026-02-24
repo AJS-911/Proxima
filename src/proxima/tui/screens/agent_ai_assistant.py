@@ -15,8 +15,10 @@ Extended AI chat interface with full agent capabilities and Phase 2 UI enhanceme
 """
 
 import json
+import logging
 import time
 import asyncio
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Callable
@@ -34,6 +36,8 @@ from rich.text import Text
 from rich.panel import Panel
 from rich.markdown import Markdown
 from rich.syntax import Syntax
+
+logger = logging.getLogger(__name__)
 
 from .base import BaseScreen
 from ..styles.theme import get_theme
@@ -144,6 +148,87 @@ try:
 except ImportError:
     LLM_AVAILABLE = False
 
+# Phase 9: Terminal orchestrator and TUI bridge
+try:
+    from proxima.agent.terminal_orchestrator import (
+        TerminalOrchestrator,
+        get_terminal_orchestrator,
+    )
+    from proxima.agent.terminal_tui_bridge import (
+        TerminalTUIBridge,
+        get_terminal_tui_bridge,
+    )
+    TERMINAL_ORCHESTRATOR_AVAILABLE = True
+except ImportError:
+    TERMINAL_ORCHESTRATOR_AVAILABLE = False
+
+# Phase 10: Agentic Loop
+try:
+    from proxima.agent.dynamic_tools.agent_loop import AgentLoop
+    AGENT_LOOP_AVAILABLE = True
+except ImportError:
+    AGENT_LOOP_AVAILABLE = False
+
+# Phase 10: LLM Tool Integration (structured tool-call parsing)
+try:
+    from proxima.agent.dynamic_tools.llm_integration import LLMToolIntegration
+    LLM_TOOL_INTEGRATION_AVAILABLE = True
+except ImportError:
+    LLM_TOOL_INTEGRATION_AVAILABLE = False
+
+# Phase 14: ProjectDependencyManager — detect, install, troubleshoot deps
+try:
+    from proxima.agent.dependency_manager import ProjectDependencyManager
+    DEPENDENCY_MANAGER_AVAILABLE = True
+except ImportError:
+    DEPENDENCY_MANAGER_AVAILABLE = False
+
+# Phase 14: AgentErrorHandler — error classification & recovery
+try:
+    from proxima.agent.agent_error_handler import AgentErrorHandler
+    ERROR_HANDLER_AVAILABLE = True
+except ImportError:
+    ERROR_HANDLER_AVAILABLE = False
+
+# Phase 15: AgentSessionManager — session persistence, import, summarization
+try:
+    from proxima.agent.agent_session_manager import (
+        AgentSessionManager,
+        SessionMessage as AgentSessionMessage,
+        SessionState as AgentSessionState,
+    )
+    AGENT_SESSION_MANAGER_AVAILABLE = True
+except ImportError:
+    AGENT_SESSION_MANAGER_AVAILABLE = False
+
+# Phase 14: SystemPromptBuilder — assembles agentic system prompt
+try:
+    from proxima.agent.dynamic_tools.system_prompt_builder import SystemPromptBuilder
+    SYSTEM_PROMPT_BUILDER_AVAILABLE = True
+except ImportError:
+    SYSTEM_PROMPT_BUILDER_AVAILABLE = False
+
+# Phase 16: Tool permission system
+try:
+    from proxima.agent.tool_permissions import ToolPermissionManager
+    TOOL_PERMISSIONS_AVAILABLE = True
+except ImportError:
+    TOOL_PERMISSIONS_AVAILABLE = False
+
+# Phase 16: Dual-model router
+try:
+    from proxima.agent.dual_model_router import DualModelRouter, ModelRole
+    DUAL_MODEL_AVAILABLE = True
+except ImportError:
+    DUAL_MODEL_AVAILABLE = False
+
+# Phase 16: Sub-agent delegation
+try:
+    from proxima.agent.sub_agent import SubAgent, SubAgentConfig
+    SUB_AGENT_AVAILABLE = True
+except ImportError:
+    SUB_AGENT_AVAILABLE = False
+
 
 class _LLMRouterAdapter:
     """Thin adapter exposing ``generate(prompt) -> str`` over ``LLMRouter``.
@@ -214,6 +299,15 @@ class AgentChatSession:
     provider: str = ""
     model: str = ""
     agent_enabled: bool = True
+
+
+# Phase 11 — risk-level emoji mapping for consent prompts (module-level constant)
+_RISK_EMOJI: Dict[str, str] = {
+    "low": "\U0001f7e1",       # 🟡
+    "medium": "\U0001f7e0",    # 🟠
+    "high": "\U0001f534",      # 🔴
+    "critical": "\u26d4",      # ⛔
+}
 
 
 class AgentAIAssistantScreen(BaseScreen):
@@ -875,6 +969,10 @@ class AgentAIAssistantScreen(BaseScreen):
         self._agent_enabled: bool = True
         self._pending_consents: List[ConsentRequest] = []
         self._active_tools: List[ToolExecutionView] = []
+        # Phase 11: consent answer handler (set dynamically during consent flow)
+        self._consent_answer_handler: Optional[Callable[[str], None]] = None
+        # Phase 12: plan confirmation answer handler
+        self._plan_answer_handler: Optional[Callable[[str], None]] = None
         
         # LLM state
         self._llm_router: Optional[LLMRouter] = None
@@ -902,10 +1000,30 @@ class AgentAIAssistantScreen(BaseScreen):
         # Initialize components
         self._initialize_components()
         self._load_panel_settings()
+        self._init_streaming_state()
     
     def _initialize_components(self) -> None:
-        """Initialize agent and LLM components."""
-        # Initialize agent
+        """Initialize agent and LLM components.
+
+        Phase 14 (Core Integration and Wiring) mandates a specific
+        initialization order so that downstream components receive their
+        dependencies.  The order is:
+
+        1. AgentController  (legacy agent — terminal events, consent flow)
+        2. LLMRouter        (model integration — any provider/model)
+        3. RobustNLProcessor (NL intent recognition — rule-based, model-agnostic)
+        4. ProjectDependencyManager (detect/install/troubleshoot deps)
+        5. TerminalOrchestrator     (multi-terminal management)
+        6. IntentToolBridge         (intent → tool dispatch)
+        7. SystemPromptBuilder      (agentic system prompt assembly)
+        8. AgentErrorHandler        (error classification & recovery)
+        9. AgentLoop                (agentic loop wiring all above)
+
+        Each component is guarded by its availability flag so a missing
+        import does not block the rest of the system.
+        """
+
+        # ── 1. Legacy AgentController ─────────────────────────────────
         if AGENT_AVAILABLE:
             try:
                 project_root = Path.cwd()
@@ -917,40 +1035,180 @@ class AgentAIAssistantScreen(BaseScreen):
                 self._agent.start()
                 self._agent.add_event_listener(self._on_terminal_event)
             except Exception:
+                logger.debug("AgentController init failed", exc_info=True)
                 self._agent = None
-        
-        # Initialize LLM
+
+        # ── 2. LLM Router (model-agnostic) ────────────────────────────
         if LLM_AVAILABLE:
             try:
                 def auto_consent(prompt: str) -> bool:
                     return True
                 self._llm_router = LLMRouter(consent_prompt=auto_consent)
             except Exception:
-                pass
-        
-        # Initialize Robust NL Processor for dynamic intent recognition
+                logger.debug("LLMRouter init failed", exc_info=True)
+
+        # ── 3. RobustNLProcessor (Phase 1 expanded IntentType + keywords) ──
         self._robust_nl_processor: Optional[RobustNLProcessor] = None
         if ROBUST_NL_AVAILABLE:
             try:
                 self._robust_nl_processor = get_robust_nl_processor(self._llm_router)
             except Exception:
-                pass
+                logger.debug("RobustNLProcessor init failed", exc_info=True)
 
-        # Initialize IntentToolBridge (Phase 3)
-        self._intent_bridge: Optional[IntentToolBridge] = None  # type: ignore[type-arg]
+        # ── 4. ProjectDependencyManager (Phase 5 — distinct from
+        #       DependencyManager in deployment_monitoring.py) ──────────
+        self._dependency_manager: Optional["ProjectDependencyManager"] = None
+        if DEPENDENCY_MANAGER_AVAILABLE:
+            try:
+                self._dependency_manager = ProjectDependencyManager()
+            except Exception:
+                logger.debug("ProjectDependencyManager init failed", exc_info=True)
+
+        # ── 5. TerminalOrchestrator (Phase 9 — wraps MultiTerminalMonitor) ──
+        self._terminal_orchestrator: Optional["TerminalOrchestrator"] = None
+        if TERMINAL_ORCHESTRATOR_AVAILABLE:
+            try:
+                self._terminal_orchestrator = get_terminal_orchestrator()
+            except Exception:
+                logger.debug("TerminalOrchestrator init failed", exc_info=True)
+
+        # ── 6. IntentToolBridge (Phase 3 — intent → tool dispatch) ─────
+        #   The bridge lazily creates its own internal dependency-manager,
+        #   checkpoint-manager, admin-handler etc. if they were not
+        #   injected.  We pass the consent callback so it can surface
+        #   dangerous-operation dialogs to the TUI.
+        self._intent_tool_bridge: Optional[IntentToolBridge] = None  # type: ignore[type-arg]
         if INTENT_BRIDGE_AVAILABLE:
             try:
-                self._intent_bridge = IntentToolBridge(
+                self._intent_tool_bridge = IntentToolBridge(
                     consent_callback=self._bridge_consent_callback,
                 )
+                # Inject the shared dependency manager so the bridge
+                # reuses the same instance instead of creating its own.
+                if self._dependency_manager is not None:
+                    self._intent_tool_bridge._dep_mgr = self._dependency_manager
+
+                # Inject the shared terminal orchestrator
+                if self._terminal_orchestrator is not None:
+                    self._intent_tool_bridge._terminal_orchestrator = (
+                        self._terminal_orchestrator
+                    )
+
                 # Phase 8: wire LLM provider for auto-commit-message generation
                 if self._llm_router and LLM_AVAILABLE:
-                    self._intent_bridge.set_llm_provider(
+                    self._intent_tool_bridge.set_llm_provider(
                         _LLMRouterAdapter(self._llm_router)
                     )
             except Exception:
-                pass
-        
+                logger.debug("IntentToolBridge init failed", exc_info=True)
+
+        # ── 7. SystemPromptBuilder (Phase 14 — assembles system prompt) ──
+        self._system_prompt_builder: Optional["SystemPromptBuilder"] = None
+        _tool_reg = None
+        if self._intent_tool_bridge is not None:
+            _tool_reg = getattr(self._intent_tool_bridge, "_tool_registry", None)
+        if SYSTEM_PROMPT_BUILDER_AVAILABLE:
+            try:
+                self._system_prompt_builder = SystemPromptBuilder(
+                    tool_registry=_tool_reg,
+                )
+            except Exception:
+                logger.debug("SystemPromptBuilder init failed", exc_info=True)
+
+        # ── 8. AgentErrorHandler (Phase 11 — wraps ErrorClassifier) ────
+        self._error_handler: Optional["AgentErrorHandler"] = None
+        if ERROR_HANDLER_AVAILABLE:
+            try:
+                self._error_handler = AgentErrorHandler(
+                    dep_manager=self._dependency_manager,
+                )
+            except Exception:
+                logger.debug("AgentErrorHandler init failed", exc_info=True)
+
+        # ── 8b. AgentSessionManager (Phase 15 — session persistence) ──
+        self._agent_session_manager: Optional["AgentSessionManager"] = None
+        if AGENT_SESSION_MANAGER_AVAILABLE:
+            try:
+                session_dir = str(Path.home() / ".proxima" / "sessions")
+                self._agent_session_manager = AgentSessionManager(
+                    storage_dir=session_dir,
+                )
+            except Exception:
+                logger.debug("AgentSessionManager init failed", exc_info=True)
+
+        # ── 9. Phase 16 — ToolPermissionManager, DualModelRouter ─────
+        self._tool_permission_manager: Optional["ToolPermissionManager"] = None
+        if TOOL_PERMISSIONS_AVAILABLE:
+            try:
+                safety_mgr = getattr(self, "_safety_manager", None)
+                # Load agent.permissions from raw config if available
+                _perm_config: dict = {}
+                try:
+                    from proxima.config.settings import config_service
+                    _raw_cfg = config_service._build_merged_dict()
+                    _perm_config = _raw_cfg.get("agent", {}).get("permissions", {})
+                except Exception:
+                    pass
+                self._tool_permission_manager = ToolPermissionManager(
+                    safety_manager=safety_mgr,
+                    config=_perm_config,
+                )
+            except Exception:
+                logger.debug("ToolPermissionManager init failed", exc_info=True)
+
+        self._dual_model_router: Optional["DualModelRouter"] = None
+        if DUAL_MODEL_AVAILABLE and LLM_AVAILABLE and self._llm_router is not None:
+            try:
+                _agent_cfg: dict = {}
+                try:
+                    from proxima.config.settings import config_service
+                    _raw_cfg = config_service._build_merged_dict()
+                    _agent_cfg = _raw_cfg.get("agent", {})
+                except Exception:
+                    pass
+                settings_obj = getattr(self._llm_router, "settings", None)
+                if settings_obj is not None:
+                    self._dual_model_router = DualModelRouter(
+                        settings=settings_obj,
+                        consent_prompt=None,
+                        agent_config=_agent_cfg,
+                    )
+            except Exception:
+                logger.debug("DualModelRouter init failed", exc_info=True)
+
+        # ── 10. AgentLoop (Phase 10 — agentic loop wiring all above) ──
+        self._agent_loop: Optional[AgentLoop] = None  # type: ignore[type-arg]
+        if AGENT_LOOP_AVAILABLE:
+            try:
+                # Resolve LLM tool integration for structured tool-call parsing
+                _llm_tool_int = None
+                if LLM_TOOL_INTEGRATION_AVAILABLE:
+                    try:
+                        _llm_tool_int = LLMToolIntegration(registry=_tool_reg)
+                    except Exception:
+                        logger.debug("LLMToolIntegration init failed", exc_info=True)
+
+                self._agent_loop = AgentLoop(
+                    nl_processor=self._robust_nl_processor,
+                    tool_bridge=self._intent_tool_bridge,
+                    llm_router=self._llm_router if LLM_AVAILABLE else None,
+                    llm_tool_integration=_llm_tool_int,
+                    session_context=(
+                        self._robust_nl_processor.get_context()
+                        if self._robust_nl_processor else None
+                    ),
+                    ui_callback=self._show_ai_message,
+                    stream_callback=self._stream_token,
+                    tool_registry=_tool_reg,
+                    plan_confirmation_callback=self._bridge_plan_confirmation_callback,
+                    post_message_callback=self._bridge_post_message,
+                    session_manager=self._agent_session_manager,  # Phase 15
+                    tool_permissions=self._tool_permission_manager,  # Phase 16
+                    dual_model_router=self._dual_model_router,      # Phase 16
+                )
+            except Exception:
+                logger.debug("AgentLoop init failed", exc_info=True)
+
         self._load_settings()
     
     def _load_settings(self) -> None:
@@ -1066,7 +1324,20 @@ class AgentAIAssistantScreen(BaseScreen):
         def handle_consent_response(response: Dict[str, Any]) -> None:
             if response and self._agent:
                 approved = response.get("approved", False)
-                self._agent.respond_to_consent(request.id, approved)
+                scope = response.get("scope")
+
+                # Map the TUI dialog scope to the correct ConsentDecision enum
+                if approved:
+                    if scope == "session":
+                        decision = ConsentDecision.APPROVED_SESSION
+                    elif scope == "always":
+                        decision = ConsentDecision.APPROVED_ALWAYS
+                    else:
+                        decision = ConsentDecision.APPROVED_ONCE
+                else:
+                    decision = ConsentDecision.DENIED
+
+                self._agent.respond_to_consent(request.id, decision)
                 
                 # Remove from pending
                 self._pending_consents = [
@@ -1393,6 +1664,9 @@ class AgentAIAssistantScreen(BaseScreen):
         except Exception:
             pass
         
+        # Phase 15: Load most recent session on startup
+        self._load_startup_session()
+
         # Initialize terminal and simulation monitoring
         self._init_monitoring_system()
         
@@ -1409,6 +1683,17 @@ class AgentAIAssistantScreen(BaseScreen):
             self._clipboard = {}
         if not hasattr(self, '_monitored_results'):
             self._monitored_results = []
+
+        # Phase 9: Initialize the terminal-to-TUI bridge
+        if TERMINAL_ORCHESTRATOR_AVAILABLE:
+            try:
+                state = getattr(self, 'state', None) or getattr(self.app, 'state', None)
+                if state is not None:
+                    bridge = get_terminal_tui_bridge(state=state, app=self.app)
+                    if bridge is not None:
+                        self._terminal_tui_bridge = bridge
+            except Exception:
+                pass
     
     def _check_monitored_processes(self) -> None:
         """Background check for monitored terminals and simulations."""
@@ -1817,6 +2102,32 @@ class AgentAIAssistantScreen(BaseScreen):
             if message not in self._prompt_history:
                 self._prompt_history.append(message)
             self._prompt_history_index = -1
+
+            # Phase 15: intercept slash commands before any other handler
+            if message.startswith("/"):
+                self._handle_slash_command(message)
+                return
+
+            # Phase 11: if a consent prompt is pending, route the message
+            # to the consent answer handler instead of generating a response.
+            if callable(self._consent_answer_handler):
+                self._show_user_message(message)
+                # Record in session so consent exchanges appear in history
+                self._current_session.messages.append(
+                    ChatMessage(role='user', content=message)
+                )
+                self._consent_answer_handler(message)
+                return
+
+            # Phase 12: if a plan confirmation prompt is pending, route
+            # the message to the plan answer handler.
+            if callable(self._plan_answer_handler):
+                self._show_user_message(message)
+                self._current_session.messages.append(
+                    ChatMessage(role='user', content=message)
+                )
+                self._plan_answer_handler(message)
+                return
             
             # Show user message
             self._show_user_message(message)
@@ -1905,7 +2216,58 @@ class AgentAIAssistantScreen(BaseScreen):
             chat_log.write(text)
         except Exception:
             pass
-    
+
+    # ── Phase 10: streaming token display ─────────────────────────────
+
+    def _init_streaming_state(self) -> None:
+        """Ensure streaming instance attributes exist."""
+        if not hasattr(self, "_streaming_buffer"):
+            self._streaming_buffer: str = ""
+        if not hasattr(self, "_streaming_started"):
+            self._streaming_started: bool = False
+
+    def _stream_token(self, token: str) -> None:
+        """Append an incremental token to the chat during streaming.
+
+        Called from a *background thread* (via ``stream_send`` callback).
+        Uses ``call_from_thread`` to safely update the Textual UI.
+        """
+        try:
+            self.call_from_thread(self._append_stream_token, token)
+        except Exception:
+            # If not in a worker thread, try direct call
+            try:
+                self._append_stream_token(token)
+            except Exception:
+                pass
+
+    def _append_stream_token(self, token: str) -> None:
+        """Thread-safe UI update: append *token* to the streaming message."""
+        try:
+            theme = get_theme()
+            chat_log = self.query_one("#chat-log", WordWrappedRichLog)
+
+            if not self._streaming_started:
+                # Write the header for a new streaming message
+                header = Text()
+                header.append("\n🤖 AI Agent (streaming)\n", style=f"bold {theme.accent}")
+                chat_log.write(header)
+                self._streaming_started = True
+                self._streaming_buffer = ""
+
+            self._streaming_buffer += token
+            # Write the token chunk
+            chunk = Text()
+            chunk.append(token, style=theme.fg_base, overflow="fold")
+            chat_log.write(chunk)
+        except Exception:
+            pass
+
+    def _finish_streaming(self) -> None:
+        """Finalise a streaming message (reset state)."""
+        self._streaming_started = False
+        self._streaming_buffer = ""
+
     def _show_tool_execution(self, tool_name: str, arguments: Dict[str, Any], result: ToolResult) -> None:
         """Display tool execution in chat with word wrapping."""
         try:
@@ -1991,56 +2353,289 @@ class AgentAIAssistantScreen(BaseScreen):
             self._update_stats_panel()
         except Exception:
             pass
-    
+
+    # ── Phase 15: Slash commands & session management ─────────────────
+
+    def _handle_slash_command(self, message: str) -> None:
+        """Handle slash commands for session management (Phase 15).
+
+        Supported commands:
+        - ``/new``              — start a new session
+        - ``/sessions``         — list available sessions
+        - ``/import <path>``    — import a session from an exported JSON
+        - ``/summarize``        — explicitly summarize the current session
+        - ``/delete``           — delete the current session
+        """
+        parts = message.strip().split(None, 1)
+        command = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if command == "/new":
+            self.action_new_chat()
+
+        elif command == "/sessions":
+            self._slash_list_sessions()
+
+        elif command == "/import":
+            self._slash_import_session(arg)
+
+        elif command == "/summarize":
+            self._slash_summarize_session()
+
+        elif command == "/delete":
+            self._slash_delete_session()
+
+        else:
+            self._show_ai_message(
+                f"Unknown command: `{command}`\n"
+                "Available commands: `/new`, `/sessions`, `/import <path>`, "
+                "`/summarize`, `/delete`"
+            )
+
+    def _slash_list_sessions(self) -> None:
+        """Handle ``/sessions`` — list available sessions."""
+        if self._agent_session_manager is None:
+            self._show_ai_message("⚠️ Session manager not available.")
+            return
+
+        sessions = self._agent_session_manager.list_sessions()
+        if not sessions:
+            self._show_ai_message("No saved sessions found.")
+            return
+
+        lines = ["📋 **Saved Sessions:**\n"]
+        for i, s in enumerate(sessions[:20], 1):
+            title = s.get("title", "Untitled")
+            msg_count = s.get("message_count", 0)
+            updated = s.get("updated_at", 0)
+
+            # Humanize the timestamp
+            if updated:
+                age_s = time.time() - updated
+                if age_s < 60:
+                    age_str = "just now"
+                elif age_s < 3600:
+                    age_str = f"{int(age_s / 60)}m ago"
+                elif age_s < 86400:
+                    age_str = f"{int(age_s / 3600)}h ago"
+                else:
+                    age_str = f"{int(age_s / 86400)}d ago"
+            else:
+                age_str = "unknown"
+
+            sid = s.get("session_id", "?")[:8]
+            lines.append(
+                f"  {i}. **{title}** — {msg_count} msgs, {age_str} `[{sid}]`"
+            )
+
+        lines.append(
+            "\nTo switch, copy a session ID and type it in chat "
+            "(session switching via selection will be added in a future update)."
+        )
+        self._show_ai_message("\n".join(lines))
+
+    def _slash_import_session(self, path: str) -> None:
+        """Handle ``/import <path>`` — import a session from a JSON file."""
+        if self._agent_session_manager is None:
+            self._show_ai_message("⚠️ Session manager not available.")
+            return
+
+        if not path:
+            self._show_ai_message(
+                "Usage: `/import <path>`\n"
+                "Example: `/import exports/ai_conversation_20260129_153400.json`"
+            )
+            return
+
+        resolved = Path(path).expanduser()
+        if not resolved.is_absolute():
+            resolved = Path.cwd() / resolved
+        if not resolved.exists():
+            self._show_ai_message(f"❌ File not found: `{resolved}`")
+            return
+
+        try:
+            session = self._agent_session_manager.import_session(str(resolved))
+            # Reset agent loop conversation and replay imported messages
+            if self._agent_loop is not None:
+                self._agent_loop.reset_conversation()
+
+            self._clear_chat()
+
+            # Replay imported messages into the TUI chat log
+            for msg in session.messages:
+                if msg.role == "user":
+                    self._show_user_message(msg.content)
+                elif msg.role == "assistant":
+                    self._show_ai_message(msg.content)
+
+            self.notify(
+                f"Imported session: {session.title} ({session.message_count} messages)",
+                severity="success",
+            )
+        except Exception as exc:
+            self._show_ai_message(f"❌ Import failed: {exc}")
+
+    def _slash_summarize_session(self) -> None:
+        """Handle ``/summarize`` — explicitly summarize the current session."""
+        if self._agent_session_manager is None:
+            self._show_ai_message("⚠️ Session manager not available.")
+            return
+
+        session = self._agent_session_manager.get_current_session()
+        if session is None or session.message_count == 0:
+            self._show_ai_message("Nothing to summarize — session is empty.")
+            return
+
+        llm_router = self._llm_router if LLM_AVAILABLE else None
+        try:
+            summary_msg = self._agent_session_manager.summarize_session(
+                llm_router, session.session_id,
+            )
+            if summary_msg is not None:
+                self._show_ai_message(
+                    "📝 **Session Summary:**\n\n" + summary_msg.content
+                )
+                self.notify(
+                    "Session summarized — older messages compressed",
+                    severity="success",
+                )
+            else:
+                self._show_ai_message("⚠️ Summarization returned no result.")
+        except Exception as exc:
+            self._show_ai_message(f"❌ Summarization failed: {exc}")
+
+    def _slash_delete_session(self) -> None:
+        """Handle ``/delete`` — delete the current session."""
+        if self._agent_session_manager is None:
+            self._show_ai_message("⚠️ Session manager not available.")
+            return
+
+        session = self._agent_session_manager.get_current_session()
+        if session is None:
+            self._show_ai_message("No active session to delete.")
+            return
+
+        session_title = session.title
+        session_id = session.session_id
+        try:
+            self._agent_session_manager.delete_session(session_id)
+
+            # Create a fresh session and clear the chat
+            self._agent_session_manager.create_session()
+            if self._agent_loop is not None:
+                self._agent_loop.reset_conversation()
+            self._clear_chat()
+
+            self.notify(
+                f"Deleted session: {session_title}",
+                severity="warning",
+            )
+        except Exception as exc:
+            self._show_ai_message(f"❌ Delete failed: {exc}")
+
+    def _load_startup_session(self) -> None:
+        """Load the most recent session on app startup (Phase 15, Step 15.3).
+
+        Restores the agent loop conversation from the persisted session
+        and shows a brief notification.  Does not replay old messages into
+        the TUI chat log to keep the startup clean.
+        """
+        if self._agent_loop is None:
+            return
+
+        try:
+            status = self._agent_loop.load_session_on_startup()
+            if status:
+                self.notify(status, severity="information", timeout=4)
+        except Exception as exc:
+            logger.debug("Startup session load failed: %s", exc)
+
     def _generate_response(self, message: str) -> None:
-        """Generate AI response with robust intent analysis and tool execution.
-        
-        Uses a multi-phase approach for reliable natural language understanding:
-        1. Direct pattern matching for complex multi-step backend operations
-        2. Robust NL processor (hybrid rule-based + context-aware) - MOST RELIABLE
-        3. LLM-based intent extraction with JSON parsing
-        4. Keyword-based agent command detection
-        5. General LLM response for questions
+        """Generate AI response via the agentic loop (Phase 10).
+
+        Routes through ``AgentLoop.process_message()`` first.  If the
+        agentic loop is unavailable or returns no result, falls back to
+        the legacy 5-phase cascade.
+
+        Legacy phases (kept as safety net during migration):
+        0. Direct pattern matching for backend/clone/build requests
+        1. Robust NL processor (hybrid rule-based + context-aware)
+        2. LLM-based intent extraction with JSON parsing
+        3. Keyword-based agent command detection
+        4. General LLM response for questions
         """
         start_time = time.time()
-        
+
+        # ── Phase 10: Agentic Loop (primary path) ────────────────────
+        if self._agent_loop is not None:
+            try:
+                # Reset streaming state
+                self._streaming_started = False
+                self._streaming_buffer = ""
+
+                result = self._agent_loop.process_message(message)
+
+                # Capture streaming state *before* reset
+                did_stream = self._streaming_started
+                streamed_text = self._streaming_buffer
+                self._finish_streaming()
+
+                if result:
+                    # If streaming already showed the same content, skip
+                    if not (did_stream and streamed_text and result.strip() == streamed_text.strip()):
+                        self._show_ai_message(result)
+
+                    # Update stats
+                    elapsed = int((time.time() - start_time) * 1000)
+                    self._current_session.messages.append(
+                        ChatMessage(role='assistant', content=result, thinking_time_ms=elapsed)
+                    )
+                    self._agent_stats.commands_run += 1
+                    self._update_stats_panel()
+                    self._save_current_session()
+                    self._update_nl_context(message, None, "agent_loop", True)
+                    self._finish_generation()
+                    return
+            except Exception as exc:
+                logger.debug("AgentLoop failed, falling back to legacy: %s", exc)
+                self._finish_streaming()
+
+        # ── Legacy fallback (Phases 0–4) ──────────────────────────────
+
         # PHASE 0: Direct pattern matching for backend/clone/build requests
-        # This handles requests like "LRET is at C:\..., clone the branch X, build it, configure"
-        # WITHOUT relying on LLM JSON parsing which can be unreliable
         direct_result = self._try_direct_backend_operation(message, start_time)
         if direct_result:
             self._update_nl_context(message, None, "direct_backend_operation", True)
             return
-        
-        # PHASE 1: Use Robust NL Processor (MOST RELIABLE for simpler models)
-        # This works with ANY LLM model including smaller ones like llama2-uncensored
+
+        # PHASE 1: Robust NL Processor
         if ROBUST_NL_AVAILABLE and self._robust_nl_processor:
             robust_result = self._try_robust_nl_execution(message, start_time)
             if robust_result:
                 return
-        
-        # PHASE 2: Use LLM to analyze intent and execute operations
-        # This allows natural language understanding for ANY sentence structure
+
+        # PHASE 2: LLM-based intent extraction
         if self._llm_router and LLM_AVAILABLE:
             operation_result = self._analyze_and_execute_with_llm(message, start_time)
             if operation_result:
                 self._update_nl_context(message, None, "llm_analyzed_operation", True)
                 return
-        
-        # PHASE 3: Fallback to keyword-based agent command detection
+
+        # PHASE 3: Keyword-based agent command detection
         if self._agent_enabled and self._agent:
             tool_result = self._try_execute_agent_command(message)
             if tool_result:
                 self._update_nl_context(message, None, "agent_command", True)
                 self._finish_generation()
                 return
-        
-        # PHASE 4: Fall back to LLM response for general questions
+
+        # PHASE 4: General LLM response
         self._generate_llm_response(message, start_time)
         self._update_nl_context(message, None, "llm_response", True)
     
     def _try_direct_backend_operation(self, message: str, start_time: float) -> bool:
-        """Directly handle backend clone/build/configure requests without LLM JSON parsing.
+        r"""Directly handle backend clone/build/configure requests without LLM JSON parsing.
         
         This handles natural language patterns like:
         - "LRET is at C:\path\to\repo and I need the branch-name branch. Clone it, build it, configure ProximA"
@@ -2266,11 +2861,11 @@ class AgentAIAssistantScreen(BaseScreen):
             return self._robust_nl_processor.execute_intent(intent)
 
         # Try bridge dispatch
-        if self._intent_bridge is not None:
+        if self._intent_tool_bridge is not None:
             try:
                 ctx = self._robust_nl_processor.get_context()
                 cwd = ctx.current_directory
-                tool_result = self._intent_bridge.dispatch(
+                tool_result = self._intent_tool_bridge.dispatch(
                     intent, cwd=cwd, session_context=ctx,
                 )
                 # Convert ToolResult → (bool, str)
@@ -2297,10 +2892,10 @@ class AgentAIAssistantScreen(BaseScreen):
         through it (with cwd updates between steps).  Otherwise, falls
         back to the in-processor ``_execute_multi_step``.
         """
-        if self._intent_bridge is not None and intent.sub_intents:
+        if self._intent_tool_bridge is not None and intent.sub_intents:
             ctx = self._robust_nl_processor.get_context()
             cwd = ctx.current_directory
-            results = self._intent_bridge.dispatch_multi_step(
+            results = self._intent_tool_bridge.dispatch_multi_step(
                 intent, cwd=cwd, session_context=ctx,
             )
             # Compose result message
@@ -2342,14 +2937,121 @@ class AgentAIAssistantScreen(BaseScreen):
         self._finish_generation()
         return True
 
-    def _bridge_consent_callback(self, command: str) -> bool:
-        """Consent callback for the IntentToolBridge.
+    # ── Phase 12: Plan confirmation & message-posting callbacks ───
 
-        For now, returns ``True`` for all commands.  A future iteration
-        can integrate with the TUI modal dialog.
+    def _bridge_plan_confirmation_callback(self, plan_text: str) -> bool:
+        """Synchronous callback invoked by ``AgentLoop._dispatch_multi_step``.
+
+        Displays the plan in the chat and blocks until the user replies
+        with *yes* or *no*.  Uses ``threading.Event`` so the TUI event
+        loop keeps running while the agent thread waits.
+
+        Returns ``True`` if the user confirmed, ``False`` otherwise.
         """
-        # TODO: Integrate with TUI ConsentDialog
-        return True
+        # The plan text has already been shown via ui_callback, so we
+        # just need to capture the user's answer.
+        evt = threading.Event()
+        user_answer: List[str] = []
+
+        def _capture(answer: str) -> None:
+            user_answer.append(answer.strip())
+            evt.set()
+
+        self._plan_answer_handler = _capture
+        evt.wait(timeout=300)  # 5-minute timeout
+        self._plan_answer_handler = None
+
+        answer = (user_answer[0] if user_answer else "").lower()
+        return answer.startswith("y")
+
+    def _bridge_post_message(self, msg: Any) -> None:
+        """Post a Textual ``Message`` object into the TUI app tree.
+
+        Called by ``AgentLoop`` to push ``AgentPlanStarted``,
+        ``AgentPlanStepCompleted``, ``AgentResultReady``, etc.
+        """
+        try:
+            if self.app is not None:
+                self.app.post_message(msg)
+        except Exception:
+            pass
+
+    def _bridge_consent_callback(self, payload: Any) -> bool:
+        """Consent callback for the IntentToolBridge (Phase 11 enhanced).
+
+        If *payload* is a ``ConsentRequest`` object, displays a risk-rated
+        consent message in the chat and checks session-level consent cache.
+        For plain string payloads, auto-approves with an info message.
+
+        Session-consent support:
+          - If the user responds with *yes always* (or *always*) the
+            ``consent_type`` is stored in ``SessionContext.session_consents``
+            as ``APPROVED_SESSION`` and subsequent requests of the same type
+            are auto-approved silently.
+        """
+
+        # --- Resolve ConsentRequest fields (if present) ----------------
+        consent_type_name: Optional[str] = None
+        risk: str = "medium"
+        description: str = str(payload)
+        operation: str = ""
+
+        if hasattr(payload, "consent_type"):
+            ct = payload.consent_type
+            consent_type_name = ct.name if hasattr(ct, "name") else str(ct)
+        if hasattr(payload, "risk_level"):
+            risk = str(payload.risk_level)
+        if hasattr(payload, "description"):
+            description = str(payload.description)
+        if hasattr(payload, "operation"):
+            operation = str(payload.operation)
+
+        # --- Check session-level consent cache -------------------------
+        session_ctx = (
+            self._robust_nl_processor.get_context()
+            if self._robust_nl_processor else None
+        )
+        if consent_type_name and session_ctx is not None:
+            cached = session_ctx.session_consents.get(consent_type_name)
+            if cached == "APPROVED_SESSION":
+                # Auto-approve silently
+                return True
+
+        # --- Display consent prompt in chat ----------------------------
+        emoji = _RISK_EMOJI.get(risk, "\U0001f7e0")
+        consent_msg = (
+            f"{emoji} **Consent required** — {operation or 'operation'}\n"
+            f"{description}\n"
+            f"Risk: **{risk}**\n\n"
+            f"Type **yes** to approve, **no** to deny, "
+            f"or **yes always** to approve all '{consent_type_name or 'this type'}' for this session."
+        )
+        self._show_ai_message(consent_msg)
+
+        # --- Synchronous wait for user answer --------------------------
+        evt = threading.Event()
+        user_answer: List[str] = []  # mutable container for closure
+
+        def _capture_answer(answer: str) -> None:
+            user_answer.append(answer.strip())
+            evt.set()
+
+        self._consent_answer_handler = _capture_answer
+        evt.wait(timeout=120)  # 2-minute timeout
+        self._consent_answer_handler = None
+
+        answer = (user_answer[0] if user_answer else "").lower()
+
+        if answer.startswith("y"):
+            approved = True
+            if "always" in answer:
+                # APPROVED_SESSION: remember for the rest of this session
+                if consent_type_name and session_ctx is not None:
+                    session_ctx.session_consents[consent_type_name] = "APPROVED_SESSION"
+        else:
+            approved = False
+
+        return approved
 
     def _create_plan_from_intents(
         self, sub_intents: list
@@ -2554,6 +3256,59 @@ class AgentAIAssistantScreen(BaseScreen):
                 ctx.last_operation_result = (
                     f"[admin_elevate] command='{command}' "
                     f"success={success}"
+                )
+
+            # Terminal monitoring → list viewed; subscribe to running (Phase 9)
+            if it in (IntentType.TERMINAL_MONITOR,):
+                ctx.last_operation_result = (
+                    f"[terminal_monitor] success={success}"
+                )
+                # Auto-subscribe to all running terminals for live output
+                if hasattr(self, '_terminal_tui_bridge') and self._terminal_tui_bridge:
+                    try:
+                        import re as _re
+                        # Subscribe to every terminal_id found in the result
+                        for tid_match in _re.finditer(r'term_[a-f0-9]+', result):
+                            self._terminal_tui_bridge.subscribe_terminal(
+                                tid_match.group(0),
+                            )
+                    except Exception:
+                        pass
+
+            # Terminal output → context only (Phase 9)
+            if it in (IntentType.TERMINAL_OUTPUT,):
+                ctx.last_operation_result = (
+                    f"[terminal_output] success={success}"
+                )
+
+            # Terminal kill → record killed terminal (Phase 9)
+            if it in (IntentType.TERMINAL_KILL,):
+                ctx.last_operation_result = (
+                    f"[terminal_kill] success={success}"
+                )
+
+            # Terminal list → context only (Phase 9)
+            if it in (IntentType.TERMINAL_LIST,):
+                ctx.last_operation_result = (
+                    f"[terminal_list] success={success}"
+                )
+
+            # Analyze results → record analysis (Phase 9)
+            if it in (IntentType.ANALYZE_RESULTS,):
+                ctx.last_operation_result = (
+                    f"[analyze_results] success={success}"
+                )
+
+            # Export results → track exported file (Phase 9)
+            if it in (IntentType.EXPORT_RESULTS,):
+                path = (
+                    intent.get_entity('path')
+                    or intent.get_entity('destination')
+                    or intent.get_entity('file')
+                    or ''
+                )
+                ctx.last_operation_result = (
+                    f"[export_results] path='{path}' success={success}"
                 )
 
         except Exception:
@@ -2783,7 +3538,7 @@ User: "What is quantum computing?"
 
 **REMEMBER:**
 1. ALWAYS return valid JSON - NEVER plain text explanations or help messages
-2. When user mentions a LOCAL PATH (like C:\... or /home/...) use COPY_LOCAL_REPO, not CLONE_ANY_REPO
+2. When user mentions a LOCAL PATH (like C:\\... or /home/...) use COPY_LOCAL_REPO, not CLONE_ANY_REPO
 3. When user mentions a GitHub URL, use CLONE_ANY_REPO
 4. When user wants to switch/checkout a branch in a local repo, include that in COPY_LOCAL_REPO params
 5. ALWAYS create multi-step operations for complex requests (clone + build + configure)
@@ -8127,7 +8882,41 @@ Be helpful and concise.""",
         self.action_toggle_panel()
     
     def action_new_chat(self) -> None:
-        """Start a new chat session."""
+        """Start a new chat session.
+
+        Phase 15: saves the current agent session before clearing, then
+        creates a new session via ``AgentSessionManager`` and resets
+        the ``SessionContext``.
+        """
+        # Phase 15: create_session() automatically saves the old session
+        # before switching to the new one.
+        if self._agent_session_manager is not None:
+            try:
+                self._agent_session_manager.create_session()
+            except Exception:
+                pass
+
+        # Reset agent loop conversation (clears internal _conversation list)
+        if self._agent_loop is not None:
+            try:
+                self._agent_loop.reset_conversation()
+            except Exception:
+                pass
+
+        # Phase 15, Step 15.4: Reset the SessionContext for the new session
+        if self._robust_nl_processor is not None:
+            try:
+                from proxima.agent.dynamic_tools.robust_nl_processor import (
+                    SessionContext as _SC,
+                )
+                fresh_ctx = _SC()
+                self._robust_nl_processor._context = fresh_ctx
+                # Also update the agent loop's reference
+                if self._agent_loop is not None:
+                    self._agent_loop._session_context = fresh_ctx
+            except Exception:
+                pass
+
         self._current_session = AgentChatSession(
             provider=self._llm_provider,
             model=self._llm_model,

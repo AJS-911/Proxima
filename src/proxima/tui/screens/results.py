@@ -1,9 +1,15 @@
 """Results screen for Proxima TUI.
 
 Results browser with probability visualization.
+
+Phase 9, Step 9.4 additions:
+* ``add_agent_result()`` — programmatic API for the agent to push
+  structured results into the list.
+* ``on_agent_result_ready()`` — Textual Message handler for
+  ``AgentResultReady``.
 """
 
-from typing import List, Dict
+from typing import Any, List, Dict, Optional
 from textual.containers import Horizontal, Vertical, Container
 from textual.widgets import Static, Button, DataTable, ListView, ListItem, Label
 from rich.text import Text
@@ -11,6 +17,7 @@ from rich.text import Text
 from .base import BaseScreen
 from ..styles.theme import get_theme
 from ..styles.icons import PROGRESS_FILLED, PROGRESS_EMPTY
+from ..messages import AgentResultReady
 from pathlib import Path
 from datetime import datetime
 import json
@@ -135,6 +142,73 @@ class ResultsScreen(BaseScreen):
             list_view._load_experiment_results_from_state()
         except Exception:
             pass
+
+    # ── Phase 9, Step 9.4: Programmatic result injection ──────────
+
+    def add_agent_result(self, result: Dict[str, Any]) -> None:
+        """Add a structured result pushed programmatically by the agent.
+
+        This is the explicit API specified in Phase 9, Step 9.4.
+        The result dictionary should contain at minimum:
+
+        * ``id`` — unique identifier
+        * ``name`` — human-readable title
+        * ``status`` — ``"success"`` or ``"failed"``
+
+        Optional but recommended keys: ``backend``, ``duration``,
+        ``success_rate``, ``avg_fidelity``, ``total_shots``, ``metrics``,
+        ``output``, ``metadata``, ``timestamp``.
+
+        The method is safe to call from any thread — it schedules the
+        UI update via ``call_from_thread`` when invoked off the main
+        thread.
+        """
+        try:
+            list_view = self.query_one(ResultsListView)
+        except Exception:
+            # Screen not mounted yet — fall back to state storage
+            self._store_result_in_state(result)
+            return
+
+        # Deduplicate by id
+        result_id = result.get("id", "")
+        for item in list_view.query("ListItem"):
+            if hasattr(item, "_result_data") and item._result_data:
+                if item._result_data.get("id") == result_id:
+                    return  # already present
+
+        # Build the display item
+        name = result.get("name", "Agent Result")
+        status = result.get("status", "unknown")
+        status_icon = {"success": "✅", "completed": "✅",
+                       "failed": "❌", "error": "❌"}.get(
+            status.lower(), "❓"
+        )
+        display_text = f"🔬 {name} ({status_icon} {status})"
+        item = ListItem(Label(display_text))
+        item._result_data = result  # type: ignore[attr-defined]
+        list_view.append(item)
+
+        # Also persist in state for cross-screen access
+        self._store_result_in_state(result)
+
+    def _store_result_in_state(self, result: Dict[str, Any]) -> None:
+        """Persist *result* into ``state.experiment_results``."""
+        state = self.state
+        if not hasattr(state, "experiment_results"):
+            state.experiment_results = []
+        # Avoid duplicates in state
+        result_id = result.get("id", "")
+        if any(r.get("id") == result_id for r in state.experiment_results):
+            return
+        state.experiment_results.insert(0, result)
+
+    def on_agent_result_ready(self, message: AgentResultReady) -> None:
+        """Handle the ``AgentResultReady`` Textual message.
+
+        Delegates to :meth:`add_agent_result`.
+        """
+        self.add_agent_result(message.result_data)
     
     def compose_main(self):
         """Compose the results screen content."""

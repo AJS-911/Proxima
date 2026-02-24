@@ -2,16 +2,29 @@
 
 Live execution monitoring with progress and controls.
 Includes integrated AI thinking panel for real-time AI interaction.
+
+Phase 9, Step 9.3 additions:
+* ``AgentTerminalStarted`` / ``AgentTerminalCompleted`` message
+  handlers for direct integration with the TerminalOrchestrator.
+* Per-terminal log prefixing so multiple simultaneous terminals can
+  be distinguished in the unified ExecutionLog.
 """
 
 from textual.containers import Horizontal, Vertical, Container, ScrollableContainer
-from textual.widgets import Static, Button, RichLog, Input
+from textual.widgets import Static, Button, RichLog, Input, TabbedContent, TabPane
 from rich.text import Text
 from rich.panel import Panel
 
 from .base import BaseScreen
 from ..styles.theme import get_theme
 from ..components.progress import ProgressBar, StageTimeline
+from ..messages import (
+    AgentTerminalStarted,
+    AgentTerminalCompleted,
+    AgentTerminalOutput,
+    AgentPlanStarted,
+    AgentPlanStepCompleted,
+)
 
 # Import controller for execution management
 try:
@@ -263,6 +276,10 @@ class ExecutionScreen(BaseScreen):
         self._llm_router = None
         self._prompt_history = []
         self._prompt_history_index = -1
+        # Phase 9: track agent terminals (id → info dict)
+        self._agent_terminals: dict = {}
+        # Phase 12: track active execution plans (plan_id → info dict)
+        self._active_plans: dict = {}
         self._ai_stats = {
             'prompt_tokens': 0,
             'completion_tokens': 0,
@@ -371,7 +388,211 @@ class ExecutionScreen(BaseScreen):
             info_panel.refresh()
         except Exception:
             pass
-    
+
+    # ── Phase 9, Step 9.3: Agent terminal message handlers ────────
+
+    def on_agent_terminal_started(self, message: AgentTerminalStarted) -> None:
+        """Handle a new agent terminal being spawned.
+
+        Updates the execution info display and logs the start event.
+        """
+        tid = message.terminal_id
+        self._agent_terminals[tid] = {
+            "name": message.name,
+            "command": message.command,
+            "cwd": message.cwd,
+            "state": "RUNNING",
+        }
+
+        try:
+            log = self.query_one("#execution-log", ExecutionLog)
+            state_icon = "🟢"
+            log.write(
+                f"\n{'━' * 50}\n"
+                f"{state_icon} Terminal [{tid[-8:]}] started: {message.name}\n"
+                f"  Command: {message.command[:80]}\n"
+                f"  CWD: {message.cwd}\n"
+                f"{'━' * 50}"
+            )
+        except Exception:
+            pass
+
+        # Update execution status to RUNNING if currently idle
+        if self.state.execution_status in ("IDLE", "COMPLETED"):
+            self.state.execution_status = "RUNNING"
+            self.state.is_running = True
+
+        # Refresh info panel
+        try:
+            info_panel = self.query_one(ExecutionInfoPanel)
+            info_panel.state = self.state
+            info_panel.refresh()
+        except Exception:
+            pass
+
+    def on_agent_terminal_output(self, message: AgentTerminalOutput) -> None:
+        """Handle a line of output from an agent terminal."""
+        try:
+            log = self.query_one("#execution-log", ExecutionLog)
+            prefix = message.terminal_id[-8:]
+            line = message.line[:500] if len(message.line) > 500 else message.line
+            if message.is_stderr:
+                log.write(f"[red][{prefix}][/red] {line}")
+            else:
+                log.write(f"[dim][{prefix}][/dim] {line}")
+        except Exception:
+            pass
+
+    def on_agent_terminal_completed(self, message: AgentTerminalCompleted) -> None:
+        """Handle an agent terminal completing.
+
+        Updates log, state, and notifies the user.
+        """
+        tid = message.terminal_id
+        if tid in self._agent_terminals:
+            self._agent_terminals[tid]["state"] = (
+                "COMPLETED" if message.success else "FAILED"
+            )
+
+        icon = "✅" if message.success else "❌"
+        try:
+            log = self.query_one("#execution-log", ExecutionLog)
+            log.write(
+                f"\n{'━' * 50}\n"
+                f"{icon} Terminal [{tid[-8:]}] {message.name} "
+                f"{'completed' if message.success else 'FAILED'}\n"
+                f"  Exit code: {message.return_code}  |  "
+                f"Duration: {message.duration:.1f}s\n"
+                f"{'━' * 50}"
+            )
+        except Exception:
+            pass
+
+        # If all tracked terminals are done, mark execution completed
+        all_done = all(
+            t["state"] in ("COMPLETED", "FAILED", "CANCELLED")
+            for t in self._agent_terminals.values()
+        )
+        if all_done and self._agent_terminals:
+            self.state.execution_status = "COMPLETED"
+            self.state.is_running = False
+            self.notify(
+                f"{icon} {message.name} finished (exit {message.return_code})",
+                severity="success" if message.success else "error",
+            )
+
+        # Refresh info panel
+        try:
+            info_panel = self.query_one(ExecutionInfoPanel)
+            info_panel.state = self.state
+            info_panel.refresh()
+        except Exception:
+            pass
+
+    # ── Phase 12: Plan lifecycle message handlers ───────────────────
+
+    def on_agent_plan_started(self, message: AgentPlanStarted) -> None:
+        """Handle the start of a multi-step execution plan.
+
+        Shows a plan overview in the execution log and updates the
+        stage timeline widget (if available).
+        """
+        try:
+            log = self.query_one("#execution-log", ExecutionLog)
+            header = (
+                f"\n{'\u2550' * 50}\n"
+                f"\U0001f4cb Plan started: {message.title}\n"
+            )
+            for step in message.steps:
+                num = step.get("step_id", 0) + 1
+                desc = step.get("description", "")
+                header += f"  {num}. {desc}\n"
+            header += f"{'\u2550' * 50}"
+            log.write(header)
+        except Exception:
+            pass
+
+        # Update execution status
+        if self.state.execution_status in ("IDLE", "COMPLETED"):
+            self.state.execution_status = "RUNNING"
+            self.state.is_running = True
+
+        # Store plan info for step tracking
+        self._active_plans[message.plan_id] = {
+            "title": message.title,
+            "steps": message.steps,
+            "completed": 0,
+        }
+
+        # Refresh info panel
+        try:
+            info_panel = self.query_one(ExecutionInfoPanel)
+            info_panel.state = self.state
+            info_panel.refresh()
+        except Exception:
+            pass
+
+    def on_agent_plan_step_completed(self, message: AgentPlanStepCompleted) -> None:
+        """Handle completion of a single plan step.
+
+        Updates the execution log with the step outcome and refreshes
+        the stage timeline progress.
+        """
+        icon = "\u2705" if message.success else "\u274c"
+        try:
+            log = self.query_one("#execution-log", ExecutionLog)
+            step_num = message.step_id + 1
+            text = (
+                f"{icon} Step {step_num} ({message.intent_type}): "
+                f"{message.message[:300]}"
+            )
+            log.write(text)
+        except Exception:
+            pass
+
+        # Update plan tracking
+        plan_info = self._active_plans.get(message.plan_id)
+        if plan_info is not None:
+            plan_info["completed"] = plan_info.get("completed", 0) + 1
+            total = len(plan_info.get("steps", []))
+            completed = plan_info["completed"]
+
+            # If all steps done (success OR skipped-on-failure), mark complete
+            if completed >= total:
+                # Determine overall success: check if any step failed
+                all_ok = not plan_info.get("has_failure", False)
+                self.state.execution_status = "COMPLETED"
+                self.state.is_running = False
+
+                try:
+                    log = self.query_one("#execution-log", ExecutionLog)
+                    log.write(
+                        f"\n{'\u2550' * 50}\n"
+                        f"\U0001f3c1 Plan '{plan_info['title']}' completed "
+                        f"({completed}/{total} steps)\n"
+                        f"{'\u2550' * 50}"
+                    )
+                except Exception:
+                    pass
+
+                severity = "success" if all_ok else "warning"
+                self.notify(
+                    f"Plan completed: {completed}/{total} steps",
+                    severity=severity,
+                )
+
+            # Track failures for severity decision
+            if not message.success:
+                plan_info["has_failure"] = True
+
+        # Refresh info panel
+        try:
+            info_panel = self.query_one(ExecutionInfoPanel)
+            info_panel.state = self.state
+            info_panel.refresh()
+        except Exception:
+            pass
+
     def _load_pending_execution_logs(self) -> None:
         """Load any pending execution logs stored by AI Assistant."""
         try:

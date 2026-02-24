@@ -907,3 +907,127 @@ class FileInfoTool(BaseTool):
                 return f"{size_bytes:.1f} {unit}"
             size_bytes /= 1024
         return f"{size_bytes:.1f} PB"
+
+
+@register_tool
+class CreateDirectoryTool(BaseTool):
+    """Create a new directory (with optional nested creation)."""
+
+    @property
+    def name(self) -> str:
+        return "create_directory"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Create a new directory at the specified path. Supports creating "
+            "nested directory structures when parents=true."
+        )
+
+    @property
+    def category(self) -> ToolCategory:
+        return ToolCategory.FILE_SYSTEM
+
+    @property
+    def required_permission(self) -> PermissionLevel:
+        return PermissionLevel.READ_WRITE
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.LOW
+
+    @property
+    def parameters(self) -> List[ToolParameter]:
+        return [
+            ToolParameter(
+                name="path",
+                description="Path to the directory to create",
+                param_type=ParameterType.PATH,
+                required=True,
+            ),
+            ToolParameter(
+                name="parents",
+                description="Create parent directories if they don't exist (default: true)",
+                param_type=ParameterType.BOOLEAN,
+                required=False,
+                default=True,
+            ),
+            ToolParameter(
+                name="exist_ok",
+                description="Don't raise an error if the directory already exists (default: true)",
+                param_type=ParameterType.BOOLEAN,
+                required=False,
+                default=True,
+            ),
+        ]
+
+    @property
+    def tags(self) -> List[str]:
+        return ["directory", "create", "mkdir", "folder", "new"]
+
+    @property
+    def examples(self) -> List[str]:
+        return [
+            "Create a new folder called 'output'",
+            "Make directory src/utils/helpers",
+            "Create the tests directory",
+            "mkdir build/release",
+        ]
+
+    def _execute(
+        self,
+        parameters: Dict[str, Any],
+        context: ExecutionContext,
+    ) -> ToolResult:
+        path = Path(parameters["path"])
+        parents = parameters.get("parents", True)
+        exist_ok = parameters.get("exist_ok", True)
+
+        # Make path absolute if relative
+        if not path.is_absolute():
+            path = Path(context.current_directory) / path
+
+        if path.exists():
+            if path.is_dir():
+                if exist_ok:
+                    return ToolResult(
+                        success=True,
+                        message=f"Directory already exists: {path.name}",
+                        result={"path": str(path), "action": "already_exists"},
+                    )
+                else:
+                    return ToolResult(
+                        success=False,
+                        error=f"Directory already exists: {path}",
+                    )
+            else:
+                return ToolResult(
+                    success=False,
+                    error=f"Path exists but is not a directory: {path}",
+                )
+
+        try:
+            path.mkdir(parents=parents, exist_ok=exist_ok)
+            return ToolResult(
+                success=True,
+                message=f"Created directory: {path.name}",
+                result={"path": str(path), "action": "created"},
+            )
+        except FileNotFoundError:
+            return ToolResult(
+                success=False,
+                error=(
+                    f"Parent directory does not exist: {path.parent}. "
+                    "Use parents=true to create parent directories."
+                ),
+            )
+        except PermissionError:
+            return ToolResult(
+                success=False,
+                error=f"Permission denied: cannot create directory at {path}",
+            )
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                error=f"Error creating directory: {str(e)}",
+            )

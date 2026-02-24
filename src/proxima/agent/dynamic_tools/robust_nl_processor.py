@@ -210,6 +210,10 @@ class SessionContext:
     # Files modified in the last backend code-modification operation
     last_modified_files: List[str] = field(default_factory=list)
 
+    # Phase 11: consent decisions persisted for this session
+    # Maps consent_type name → decision string (e.g. "APPROVED_SESSION")
+    session_consents: Dict[str, str] = field(default_factory=dict)
+
     # ── Helper constants (ClassVar — excluded from __init__/__repr__) ──
     _ACTION_VERBS: ClassVar[Tuple[str, ...]] = (
         'run', 'execute', 'build', 'test', 'compile', 'start', 'launch',
@@ -363,6 +367,105 @@ class SessionContext:
             return self.pop_directory()
 
         return None
+
+    # ── Session persistence (Phase 14, Item #13) ─────────────────────
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize session state to a JSON-safe dictionary.
+
+        ``Intent`` objects in *operation_history* and *last_operation* are
+        converted to lightweight dicts so the output is ``json.dumps``-safe.
+        """
+
+        def _intent_to_dict(intent: "Intent") -> Dict[str, Any]:
+            return {
+                "intent_type": intent.intent_type.name if hasattr(intent.intent_type, "name") else str(intent.intent_type),
+                "confidence": intent.confidence,
+                "raw_input": intent.raw_input,
+                "entities": [
+                    {"entity_type": e.entity_type, "value": e.value, "confidence": e.confidence}
+                    for e in (intent.entities or [])
+                ],
+                "sub_intents": [_intent_to_dict(s) for s in (intent.sub_intents or [])],
+            }
+
+        return {
+            "current_directory": self.current_directory,
+            "last_mentioned_paths": list(self.last_mentioned_paths),
+            "last_mentioned_branches": list(self.last_mentioned_branches),
+            "last_mentioned_urls": list(self.last_mentioned_urls),
+            "last_operation": _intent_to_dict(self.last_operation) if self.last_operation else None,
+            "operation_history": [_intent_to_dict(i) for i in self.operation_history],
+            "variables": dict(self.variables),
+            "cloned_repos": dict(self.cloned_repos),
+            "last_cloned_repo": self.last_cloned_repo,
+            "last_cloned_url": self.last_cloned_url,
+            "active_terminals": {k: dict(v) for k, v in self.active_terminals.items()},
+            "installed_packages": list(self.installed_packages),
+            "active_environments": dict(self.active_environments),
+            "last_operation_result": self.last_operation_result,
+            "last_script_executed": self.last_script_executed,
+            "last_mentioned_packages": list(self.last_mentioned_packages),
+            "conversation_history": list(self.conversation_history),
+            "working_directory_stack": list(self.working_directory_stack),
+            "last_built_backend": self.last_built_backend,
+            "backend_checkpoints": dict(self.backend_checkpoints),
+            "last_modified_files": list(self.last_modified_files),
+            "session_consents": dict(self.session_consents),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SessionContext":
+        """Restore a ``SessionContext`` from a dictionary produced by ``to_dict``.
+
+        Intent objects are **not** reconstructed — ``last_operation`` and
+        ``operation_history`` are set to ``None`` / empty list because full
+        ``Intent`` reconstruction requires the processor.  All primitive and
+        collection fields are restored faithfully.
+        """
+        ctx = cls()
+        ctx.current_directory = data.get("current_directory", os.getcwd())
+        ctx.last_mentioned_paths = data.get("last_mentioned_paths", [])
+        ctx.last_mentioned_branches = data.get("last_mentioned_branches", [])
+        ctx.last_mentioned_urls = data.get("last_mentioned_urls", [])
+        # Intentionally skip restoring Intent objects — they require the
+        # processor to reconstruct and are not critical for session continuity.
+        ctx.last_operation = None
+        ctx.operation_history = []
+        ctx.variables = data.get("variables", {})
+        ctx.cloned_repos = data.get("cloned_repos", {})
+        ctx.last_cloned_repo = data.get("last_cloned_repo")
+        ctx.last_cloned_url = data.get("last_cloned_url")
+        ctx.active_terminals = data.get("active_terminals", {})
+        ctx.installed_packages = data.get("installed_packages", [])
+        ctx.active_environments = data.get("active_environments", {})
+        ctx.last_operation_result = data.get("last_operation_result")
+        ctx.last_script_executed = data.get("last_script_executed")
+        ctx.last_mentioned_packages = data.get("last_mentioned_packages", [])
+        ctx.conversation_history = [
+            tuple(pair) for pair in data.get("conversation_history", [])
+        ]
+        ctx.working_directory_stack = data.get("working_directory_stack", [])
+        ctx.last_built_backend = data.get("last_built_backend")
+        ctx.backend_checkpoints = data.get("backend_checkpoints", {})
+        ctx.last_modified_files = data.get("last_modified_files", [])
+        ctx.session_consents = data.get("session_consents", {})
+        return ctx
+
+    def save(self, path: str) -> None:
+        """Persist session state to a JSON file.
+
+        Creates parent directories if they don't exist.
+        """
+        dest = Path(path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(self.to_dict(), indent=2, default=str), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: str) -> "SessionContext":
+        """Load a ``SessionContext`` from a JSON file produced by ``save``."""
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return cls.from_dict(data)
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +773,23 @@ class RobustNLProcessor:
                 ),
             ],
 
+            # Commit message extraction — quoted text after message/saying
+            'commit_message': [
+                re.compile(
+                    r'(?:with\s+message|message|saying|msg)\s+["\']([^"\']+)["\']',
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    r'(?:with\s+message|message|saying|msg)\s+["\']([^"\']+)["\']',
+                    re.IGNORECASE,
+                ),
+                # Unquoted: "commit message fix the bug" (after 'message' keyword)
+                re.compile(
+                    r'(?:with\s+message|commit\s+message)\s+(?!["\'`])(.+?)(?:\s*$)',
+                    re.IGNORECASE,
+                ),
+            ],
+
             # Directory names from navigation context (pre-compiled)
             'dirname': [
                 re.compile(
@@ -791,8 +911,9 @@ class RobustNLProcessor:
             ],
             IntentType.TERMINAL_OUTPUT: [
                 'show output', 'terminal output', 'what did it print',
-                'show log', 'show terminal', 'output of',
-                'see output', 'print output', 'display output'
+                'show terminal log', 'show terminal', 'output of',
+                'see output', 'print output', 'display output',
+                'terminal log'
             ],
             IntentType.TERMINAL_KILL: [
                 'kill terminal', 'stop terminal', 'kill process',
@@ -1247,6 +1368,13 @@ class RobustNLProcessor:
                 if val and len(val) > 1:
                     _add(qc_types[idx], val, 0.85)
 
+        # ── Commit message extraction ─────────────────────────────────
+        for pattern in self._patterns['commit_message']:
+            for match in pattern.finditer(message):
+                val = match.group(1).strip()
+                if val and len(val) > 1:
+                    _add('commit_message', val, 0.9)
+
         return entities
 
     # ── Phase 2, Step 2.4: Pronoun / reference resolution ─────────────
@@ -1509,12 +1637,140 @@ class RobustNLProcessor:
 
     # ── Layer 3: Keyword Scoring ──────────────────────────────────────
 
+    # ── Keyword collision disambiguation tables ─────────────────────
+
+    # Ambiguous standalone keywords that require entity context or a
+    # companion keyword to confidently select a specific intent.  When
+    # one of these is the *only* keyword that matched, and the entity
+    # context listed under ``required_context`` is absent, the match
+    # receives a confidence penalty, allowing a more-specific intent
+    # (or Layer 4 LLM) to win.
+
+    _DISAMBIGUATION_RULES: Dict[IntentType, Dict[str, Any]] = {
+        # "build" alone should NOT trigger BACKEND_BUILD — needs a backend name
+        IntentType.BACKEND_BUILD: {
+            'ambiguous_keywords': {'build', 'compile', 'make'},
+            'required_context': lambda entities, msg: (
+                any(e.entity_type in ('name', 'backend') for e in entities)
+                or any(w in msg for w in (
+                    'backend', 'lret', 'cirq', 'qiskit', 'quest', 'qsim',
+                    'cuquantum', 'pennylane',
+                ))
+            ),
+            'fallback': IntentType.RUN_COMMAND,
+        },
+        # "configure" alone → CONFIGURE_ENVIRONMENT; needs "backend"/"proxima"
+        # for BACKEND_CONFIGURE
+        IntentType.BACKEND_CONFIGURE: {
+            'ambiguous_keywords': {'configure', 'setup'},
+            'required_context': lambda entities, msg: (
+                any(w in msg for w in (
+                    'backend', 'proxima', 'lret', 'cirq', 'qiskit',
+                    'quest', 'qsim', 'cuquantum', 'pennylane',
+                ))
+            ),
+            'fallback': IntentType.CONFIGURE_ENVIRONMENT,
+        },
+        # "test" alone → RUN_COMMAND; needs "backend" for BACKEND_TEST
+        IntentType.BACKEND_TEST: {
+            'ambiguous_keywords': {'test'},
+            'required_context': lambda entities, msg: (
+                any(w in msg for w in (
+                    'backend', 'build', 'lret', 'cirq', 'qiskit',
+                    'quest', 'qsim', 'cuquantum', 'pennylane',
+                ))
+            ),
+            'fallback': IntentType.RUN_COMMAND,
+        },
+        # "search" alone → needs file/content context for SEARCH_FILE,
+        # URL context for WEB_SEARCH
+        IntentType.SEARCH_FILE: {
+            'ambiguous_keywords': {'search'},
+            'required_context': lambda entities, msg: (
+                any(w in msg for w in (
+                    'file', 'in file', 'content', 'grep', 'find in',
+                    'codebase', 'directory', 'folder',
+                ))
+                or any(e.entity_type == 'path' for e in entities)
+            ),
+            'fallback': IntentType.UNKNOWN,  # let Layer 4 decide
+        },
+        # "export" alone → needs "results"/"data" context for EXPORT_RESULTS
+        IntentType.EXPORT_RESULTS: {
+            'ambiguous_keywords': {'export'},
+            'required_context': lambda entities, msg: (
+                any(w in msg for w in (
+                    'results', 'data', 'analysis', 'output', 'report',
+                ))
+            ),
+            'fallback': IntentType.UNKNOWN,
+        },
+        # "install" alone → usually INSTALL_DEPENDENCY, but "install backend"
+        # should be BACKEND_BUILD
+        IntentType.INSTALL_DEPENDENCY: {
+            'ambiguous_keywords': {'install'},
+            'redirect_context': lambda entities, msg: (
+                IntentType.BACKEND_BUILD
+                if any(w in msg for w in (
+                    'backend', 'lret', 'cirq', 'qiskit', 'quest',
+                    'qsim', 'cuquantum', 'pennylane',
+                ))
+                else None  # keep as INSTALL_DEPENDENCY
+            ),
+        },
+        # "log" standalone → GIT_LOG; "terminal log" → TERMINAL_OUTPUT
+        IntentType.GIT_LOG: {
+            'ambiguous_keywords': {'log'},
+            'redirect_context': lambda entities, msg: (
+                IntentType.TERMINAL_OUTPUT
+                if any(w in msg for w in ('terminal', 'process', 'output'))
+                else None  # keep as GIT_LOG
+            ),
+        },
+        # "list" standalone → LIST_DIRECTORY; but "list backends" / "list terminals"
+        # should redirect
+        IntentType.LIST_DIRECTORY: {
+            'ambiguous_keywords': {'list'},
+            'redirect_context': lambda entities, msg: (
+                IntentType.BACKEND_LIST
+                if any(w in msg for w in ('backend', 'backends'))
+                else IntentType.TERMINAL_LIST
+                if any(w in msg for w in ('terminal', 'terminals'))
+                else None
+            ),
+        },
+        # "fetch" alone → GIT_FETCH; "fetch url/page" → WEB_SEARCH
+        IntentType.GIT_FETCH: {
+            'ambiguous_keywords': {'fetch'},
+            'redirect_context': lambda entities, msg: (
+                IntentType.WEB_SEARCH
+                if any(w in msg for w in ('url', 'page', 'website', 'http'))
+                or any(e.entity_type == 'url' for e in entities)
+                else None
+            ),
+        },
+        # "status" alone → GIT_STATUS; "terminal status" → TERMINAL_MONITOR
+        IntentType.GIT_STATUS: {
+            'ambiguous_keywords': {'status'},
+            'redirect_context': lambda entities, msg: (
+                IntentType.TERMINAL_MONITOR
+                if any(w in msg for w in ('terminal', 'process'))
+                else None
+            ),
+        },
+    }
+
     def _layer3_keyword_scoring(
         self,
         msg_lower: str,
         entities: List[ExtractedEntity],
     ) -> Tuple[IntentType, float, List[Tuple[IntentType, float]]]:
         """Layer 3 — score every intent type against the message.
+
+        Uses length-weighted keyword scoring followed by entity-aware
+        disambiguation for collision-prone keywords (``build``,
+        ``configure``, ``search``, ``log``, ``export``, ``install``,
+        ``test``, ``list``, ``fetch``, ``status``).
 
         Returns (best_intent, best_confidence, sorted_candidates).
         ``sorted_candidates`` is a list of (IntentType, confidence) pairs
@@ -1525,19 +1781,61 @@ class RobustNLProcessor:
         for intent_type, keywords in self._intent_keywords.items():
             score = 0.0
             matches = 0
+            matched_words: List[str] = []
             for keyword in keywords:
                 if keyword in msg_lower:
                     matches += 1
                     score += len(keyword) / 20.0
+                    matched_words.append(keyword)
             if matches > 0:
                 confidence = min(0.5 + (score * 0.5), 0.95)
                 scored.append((intent_type, confidence))
 
         scored.sort(key=lambda x: x[1], reverse=True)
 
-        if scored:
-            return scored[0][0], scored[0][1], scored
-        return IntentType.UNKNOWN, 0.0, scored
+        if not scored:
+            return IntentType.UNKNOWN, 0.0, scored
+
+        # ── Entity-aware disambiguation for top candidate ─────────
+        best_intent, best_confidence = scored[0]
+        rule = self._DISAMBIGUATION_RULES.get(best_intent)
+
+        if rule is not None:
+            # Determine which keywords actually matched for this intent
+            matched = {
+                kw for kw in self._intent_keywords.get(best_intent, [])
+                if kw in msg_lower
+            }
+            ambiguous = rule.get('ambiguous_keywords', set())
+
+            # Only apply disambiguation when the ONLY matches are
+            # ambiguous standalone keywords (no multi-word specifics)
+            only_ambiguous = matched and matched.issubset(ambiguous)
+
+            if only_ambiguous:
+                # Check redirect_context first (keyword redirects to
+                # a different intent based on accompanying words)
+                redirect_fn = rule.get('redirect_context')
+                if redirect_fn is not None:
+                    redirect_to = redirect_fn(entities, msg_lower)
+                    if redirect_to is not None:
+                        best_intent = redirect_to
+                        # Preserve confidence for the redirected intent
+                        return best_intent, best_confidence, scored
+
+                # Check required_context (entity/keyword gating)
+                req_fn = rule.get('required_context')
+                if req_fn is not None and not req_fn(entities, msg_lower):
+                    # Context not met — fall back
+                    fallback = rule.get('fallback', IntentType.UNKNOWN)
+                    if fallback == IntentType.UNKNOWN:
+                        # Penalise confidence so Layer 4 can override
+                        best_confidence = min(best_confidence, 0.45)
+                    else:
+                        best_intent = fallback
+                    return best_intent, best_confidence, scored
+
+        return best_intent, best_confidence, scored
 
     # ── Layer 4: LLM-Assisted Classification ──────────────────────────
 
@@ -1883,37 +2181,77 @@ class RobustNLProcessor:
                 })
                 continue
             
-            # PRIORITY 5: Install/compile/test/configure commands
+            # PRIORITY 5: Install dependencies
             if any(kw in part_lower for kw in ['install', 'dependencies', 'pip', 'npm', 'requirements']):
                 entities.append(ExtractedEntity('command', self._infer_install_command(part), 0.8, 'inferred'))
                 sub_intents.append({
-                    'type': IntentType.RUN_COMMAND,
+                    'type': IntentType.INSTALL_DEPENDENCY,
                     'part': part,
                     'entities': entities
                 })
                 continue
             
+            # PRIORITY 6: Build / compile (→ BACKEND_BUILD)
             if any(kw in part_lower for kw in ['compile', 'build', 'make']):
                 entities.append(ExtractedEntity('command', self._infer_build_command(part), 0.8, 'inferred'))
                 sub_intents.append({
-                    'type': IntentType.RUN_COMMAND,
+                    'type': IntentType.BACKEND_BUILD,
                     'part': part,
                     'entities': entities
                 })
                 continue
             
+            # PRIORITY 7: Test (→ BACKEND_TEST)
             if any(kw in part_lower for kw in ['test', 'pytest', 'unittest']):
                 entities.append(ExtractedEntity('command', self._infer_test_command(part), 0.8, 'inferred'))
                 sub_intents.append({
-                    'type': IntentType.RUN_COMMAND,
+                    'type': IntentType.BACKEND_TEST,
+                    'part': part,
+                    'entities': entities
+                })
+                continue
+            
+            # PRIORITY 8: Configure (→ BACKEND_CONFIGURE)
+            # Use a two-tier check: first match explicit Proxima/backend
+            # phrases, then fallback to generic configure/setup only when
+            # the surrounding text suggests backend configuration (not
+            # e.g. "configure the build" which is BACKEND_BUILD).
+            if any(kw in part_lower for kw in ['configure proxima', 'configure backend',
+                                                 'configure it', 'setup proxima', 'config proxima',
+                                                 'use it', 'use the backend', 'add to proxima']):
+                sub_intents.append({
+                    'type': IntentType.BACKEND_CONFIGURE,
                     'part': part,
                     'entities': entities
                 })
                 continue
             
             if any(kw in part_lower for kw in ['configure', 'setup', 'config']):
+                # Avoid capturing "configure the build" — only match if
+                # there's no stronger build/test/install signal.
+                if not any(bk in part_lower for bk in ['build', 'compile', 'test', 'install']):
+                    sub_intents.append({
+                        'type': IntentType.BACKEND_CONFIGURE,
+                        'part': part,
+                        'entities': entities
+                    })
+                    continue
+            
+            # PRIORITY 9: Analyze results (→ ANALYZE_RESULTS)
+            if any(kw in part_lower for kw in ['analyze', 'analyse', 'analysis', 'interpret',
+                                                 'examine results', 'show results', 'show in result']):
                 sub_intents.append({
-                    'type': IntentType.RUN_COMMAND,
+                    'type': IntentType.ANALYZE_RESULTS,
+                    'part': part,
+                    'entities': entities
+                })
+                continue
+            
+            # PRIORITY 10: Export results (→ EXPORT_RESULTS)
+            if any(kw in part_lower for kw in ['export', 'save results', 'write results',
+                                                 'output results', 'result tab']):
+                sub_intents.append({
+                    'type': IntentType.EXPORT_RESULTS,
                     'part': part,
                     'entities': entities
                 })

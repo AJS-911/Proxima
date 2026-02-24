@@ -198,6 +198,9 @@ class AdminPrivilegeHandler:
         "/boot",
     ]
     
+    # Maximum consecutive admin escalations allowed per session (Phase 7)
+    MAX_ESCALATIONS_PER_SESSION: int = 3
+
     def __init__(
         self,
         audit_log_path: Optional[Path] = None,
@@ -206,14 +209,20 @@ class AdminPrivilegeHandler:
         """Initialize the privilege handler.
         
         Args:
-            audit_log_path: Path for audit log file
+            audit_log_path: Path for audit log file.  Defaults to
+                ``~/.proxima/logs/admin_audit.log`` when *None*.
             consent_callback: Callback for consent prompts
         """
-        self.audit_log_path = audit_log_path or Path(tempfile.gettempdir()) / "proxima_audit.log"
+        if audit_log_path is None:
+            default_dir = Path.home() / ".proxima" / "logs"
+            default_dir.mkdir(parents=True, exist_ok=True)
+            audit_log_path = default_dir / "admin_audit.log"
+        self.audit_log_path = audit_log_path
         self.consent_callback = consent_callback
         
         self._privilege_info: Optional[PrivilegeInfo] = None
         self._operation_history: List[PrivilegedOperation] = []
+        self._escalation_count: int = 0
     
     def get_privilege_info(self, refresh: bool = False) -> PrivilegeInfo:
         """Get current privilege information.
@@ -420,6 +429,15 @@ class AdminPrivilegeHandler:
         logger.warning(f"No consent callback for operation: {operation.description}")
         return False
     
+    def reset_escalation_count(self) -> None:
+        """Reset the per-session escalation counter (e.g. on new session)."""
+        self._escalation_count = 0
+
+    @property
+    def escalation_count(self) -> int:
+        """Return the current escalation count."""
+        return self._escalation_count
+
     def execute_elevated(
         self,
         command: str,
@@ -429,6 +447,11 @@ class AdminPrivilegeHandler:
     ) -> ElevationResult:
         """Execute a command with elevated privileges.
         
+        Enforces a per-session limit of :pyattr:`MAX_ESCALATIONS_PER_SESSION`
+        consecutive admin escalations.  Once the limit is reached every
+        subsequent call returns a failure result until
+        :meth:`reset_escalation_count` is called.
+
         Args:
             command: Command to execute
             working_dir: Working directory
@@ -439,7 +462,27 @@ class AdminPrivilegeHandler:
             ElevationResult
         """
         info = self.get_privilege_info()
-        
+
+        # ── Phase 7: enforce 3-consecutive-escalation limit ───────
+        if (
+            not info.is_admin
+            and self._escalation_count >= self.MAX_ESCALATIONS_PER_SESSION
+        ):
+            logger.warning(
+                "Escalation limit reached (%d/%d)",
+                self._escalation_count,
+                self.MAX_ESCALATIONS_PER_SESSION,
+            )
+            return ElevationResult(
+                success=False,
+                method=info.elevation_method,
+                error=(
+                    f"Maximum admin escalations reached "
+                    f"({self.MAX_ESCALATIONS_PER_SESSION} per session). "
+                    f"Please restart the session or run from an elevated prompt."
+                ),
+            )
+
         # Create operation record
         operation = PrivilegedOperation(
             operation_id=f"op_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
@@ -463,6 +506,10 @@ class AdminPrivilegeHandler:
         else:
             operation.approved = True
         
+        # Track escalation count when elevation is actually needed
+        if not info.is_admin:
+            self._escalation_count += 1
+
         # Execute based on platform
         if info.is_admin:
             result = self._execute_direct(command, working_dir, timeout)

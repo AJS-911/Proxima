@@ -5,12 +5,15 @@ dynamically discovered and used by the LLM.
 
 Tools included:
 - GitStatus: Get repository status
-- GitCommit: Create commits
+- GitCommit: Create commits (with optional LLM commit message generation)
 - GitBranch: Branch management
 - GitLog: View commit history
 - GitDiff: View changes
 - GitCheckout: Switch branches/restore files
 - GitStash: Stash management
+- GitAdd: Stage files
+- GitPull: Pull from remote
+- GitPush: Push to remote (with auto-fix for upstream failures)
 """
 
 from __future__ import annotations
@@ -268,9 +271,12 @@ class GitCommitTool(BaseTool):
         return [
             ToolParameter(
                 name="message",
-                description="Commit message",
+                description=(
+                    "Commit message. If omitted and an LLM is available, "
+                    "a message is auto-generated from the staged diff."
+                ),
                 param_type=ParameterType.STRING,
-                required=True,
+                required=False,
             ),
             ToolParameter(
                 name="stage_all",
@@ -305,7 +311,7 @@ class GitCommitTool(BaseTool):
         parameters: Dict[str, Any],
         context: ExecutionContext,
     ) -> ToolResult:
-        message = parameters["message"]
+        message = parameters.get("message", "")
         stage_all = parameters.get("stage_all", False)
         path = Path(parameters.get("path", "."))
         
@@ -327,6 +333,51 @@ class GitCommitTool(BaseTool):
                     success=False,
                     error=f"Failed to stage changes: {add_result.get('stderr', '')}",
                 )
+        
+        # ── LLM commit message generation (Phase 8, Step 8.4) ────────
+        if not message:
+            # Try to generate a commit message from the staged diff
+            diff_result = run_git_command(
+                ["diff", "--staged", "--stat"], str(git_root)
+            )
+            diff_detail = run_git_command(
+                ["diff", "--staged"], str(git_root)
+            )
+            staged_diff = diff_detail.get("stdout", "")
+            diff_summary = diff_result.get("stdout", "")
+            
+            if not staged_diff.strip():
+                return ToolResult(
+                    success=False,
+                    error=(
+                        "Nothing staged to commit and no message provided. "
+                        "Stage some changes first."
+                    ),
+                )
+            
+            # Attempt LLM generation if available via context
+            llm_generated = False
+            if hasattr(context, "llm_client") and context.llm_client is not None:
+                try:
+                    # Truncate diff to avoid exceeding token limits
+                    truncated = staged_diff[:3000]
+                    prompt = (
+                        "Generate a concise commit message for these changes. "
+                        "Return ONLY the commit message, no explanation:\n\n"
+                        f"{truncated}"
+                    )
+                    llm_response = context.llm_client.generate(prompt)
+                    if llm_response and llm_response.strip():
+                        message = llm_response.strip().strip('"').strip("'")
+                        llm_generated = True
+                except Exception:
+                    pass  # Fall through to auto-generated message
+            
+            if not message:
+                # Fallback: auto-generate from diff summary
+                files_changed = diff_summary.strip().split("\n")[-1] if diff_summary.strip() else ""
+                message = f"Update: {files_changed}" if files_changed else "Update changes"
+                llm_generated = False
         
         # Create commit
         commit_result = run_git_command(["commit", "-m", message], str(git_root))
@@ -846,4 +897,306 @@ class GitAddTool(BaseTool):
         return ToolResult(
             success=False,
             error=result.get("stderr", "Failed to stage files"),
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 8 — Git Pull and Push tools
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@register_tool
+class GitPullTool(BaseTool):
+    """Pull changes from a remote repository."""
+
+    @property
+    def name(self) -> str:
+        return "git_pull"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Pull the latest changes from a remote repository. "
+            "Verifies the directory is a git repo before pulling."
+        )
+
+    @property
+    def category(self) -> ToolCategory:
+        return ToolCategory.GIT
+
+    @property
+    def required_permission(self) -> PermissionLevel:
+        return PermissionLevel.READ_WRITE
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.LOW
+
+    @property
+    def parameters(self) -> List[ToolParameter]:
+        return [
+            ToolParameter(
+                name="remote",
+                description="Remote name (default: origin)",
+                param_type=ParameterType.STRING,
+                required=False,
+                default="origin",
+            ),
+            ToolParameter(
+                name="branch",
+                description="Branch to pull (default: current tracking branch)",
+                param_type=ParameterType.STRING,
+                required=False,
+            ),
+            ToolParameter(
+                name="path",
+                description="Path to the repository",
+                param_type=ParameterType.PATH,
+                required=False,
+                default=".",
+            ),
+        ]
+
+    @property
+    def tags(self) -> List[str]:
+        return ["git", "pull", "fetch", "update", "remote"]
+
+    @property
+    def examples(self) -> List[str]:
+        return [
+            "Pull the latest changes",
+            "Pull from upstream main",
+            "Update the repo",
+        ]
+
+    def _execute(
+        self,
+        parameters: Dict[str, Any],
+        context: ExecutionContext,
+    ) -> ToolResult:
+        remote = parameters.get("remote", "origin")
+        branch = parameters.get("branch")
+        path = Path(parameters.get("path", "."))
+
+        if not path.is_absolute():
+            path = Path(context.current_directory) / path
+
+        git_root = find_git_root(path)
+        if not git_root:
+            return ToolResult(
+                success=False,
+                error="Not a git repository",
+            )
+
+        # Build pull command
+        cmd = ["pull", remote]
+        if branch:
+            cmd.append(branch)
+
+        result = run_git_command(cmd, str(git_root))
+
+        if result["success"]:
+            stdout = result.get("stdout", "")
+            if "Already up to date" in stdout:
+                return ToolResult(
+                    success=True,
+                    message="Already up to date.",
+                )
+            return ToolResult(
+                success=True,
+                message=f"Pull complete.\n{stdout}",
+                result={"stdout": stdout},
+            )
+
+        stderr = result.get("stderr", "")
+        # Detect merge conflicts
+        if "CONFLICT" in stderr or "CONFLICT" in result.get("stdout", ""):
+            return ToolResult(
+                success=False,
+                error=(
+                    f"Pull resulted in merge conflicts:\n{stderr}\n"
+                    "Resolve conflicts manually or use 'resolve merge conflicts'."
+                ),
+            )
+        return ToolResult(
+            success=False,
+            error=f"Pull failed: {stderr}",
+        )
+
+
+@register_tool
+class GitPushTool(BaseTool):
+    """Push commits to a remote repository.
+
+    Handles common push failures automatically:
+    - No upstream branch → auto-sets upstream with ``--set-upstream``
+    - Rejected (non-fast-forward) → suggests ``git pull --rebase``
+    """
+
+    @property
+    def name(self) -> str:
+        return "git_push"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Push local commits to a remote repository. "
+            "Automatically handles 'no upstream branch' errors by "
+            "setting the upstream. Requires consent."
+        )
+
+    @property
+    def category(self) -> ToolCategory:
+        return ToolCategory.GIT
+
+    @property
+    def required_permission(self) -> PermissionLevel:
+        return PermissionLevel.EXECUTE
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.MEDIUM
+
+    @property
+    def parameters(self) -> List[ToolParameter]:
+        return [
+            ToolParameter(
+                name="remote",
+                description="Remote name (default: origin)",
+                param_type=ParameterType.STRING,
+                required=False,
+                default="origin",
+            ),
+            ToolParameter(
+                name="branch",
+                description="Branch to push (default: current branch)",
+                param_type=ParameterType.STRING,
+                required=False,
+            ),
+            ToolParameter(
+                name="force",
+                description="Force push (--force-with-lease for safety)",
+                param_type=ParameterType.BOOLEAN,
+                required=False,
+                default=False,
+            ),
+            ToolParameter(
+                name="path",
+                description="Path to the repository",
+                param_type=ParameterType.PATH,
+                required=False,
+                default=".",
+            ),
+        ]
+
+    @property
+    def tags(self) -> List[str]:
+        return ["git", "push", "remote", "publish"]
+
+    @property
+    def examples(self) -> List[str]:
+        return [
+            "Push changes to remote",
+            "Push to origin main",
+            "Publish my branch",
+        ]
+
+    def _execute(
+        self,
+        parameters: Dict[str, Any],
+        context: ExecutionContext,
+    ) -> ToolResult:
+        remote = parameters.get("remote", "origin")
+        branch = parameters.get("branch")
+        force = parameters.get("force", False)
+        path = Path(parameters.get("path", "."))
+
+        if not path.is_absolute():
+            path = Path(context.current_directory) / path
+
+        git_root = find_git_root(path)
+        if not git_root:
+            return ToolResult(
+                success=False,
+                error="Not a git repository",
+            )
+
+        # Get current branch name if not specified
+        if not branch:
+            branch_result = run_git_command(
+                ["rev-parse", "--abbrev-ref", "HEAD"], str(git_root)
+            )
+            branch = branch_result.get("stdout", "").strip() or None
+
+        # Build push command
+        cmd = ["push", remote]
+        if branch:
+            cmd.append(branch)
+        if force:
+            cmd.append("--force-with-lease")
+
+        result = run_git_command(cmd, str(git_root))
+
+        if result["success"]:
+            return ToolResult(
+                success=True,
+                message=f"Pushed to {remote}/{branch or 'HEAD'} successfully.",
+                result={
+                    "remote": remote,
+                    "branch": branch,
+                },
+            )
+
+        stderr = result.get("stderr", "")
+
+        # ── Auto-fix: no upstream branch ──────────────────────────────
+        if (
+            "no upstream branch" in stderr.lower()
+            or "has no upstream branch" in stderr.lower()
+            or "--set-upstream" in stderr
+        ):
+            if branch:
+                retry = run_git_command(
+                    ["push", "--set-upstream", remote, branch],
+                    str(git_root),
+                )
+                if retry["success"]:
+                    return ToolResult(
+                        success=True,
+                        message=(
+                            f"Set upstream and pushed {branch} to {remote}."
+                        ),
+                        result={
+                            "remote": remote,
+                            "branch": branch,
+                            "set_upstream": True,
+                        },
+                    )
+                stderr = retry.get("stderr", stderr)
+
+        # ── Non-fast-forward / rejected push ──────────────────────────
+        if "rejected" in stderr.lower() or "non-fast-forward" in stderr.lower():
+            return ToolResult(
+                success=False,
+                error=(
+                    f"Push rejected (non-fast-forward). Remote has changes "
+                    f"not present locally.\n{stderr}\n\n"
+                    f"Suggested fix: run 'git pull --rebase' first, then push again."
+                ),
+            )
+
+        # ── Authentication error ──────────────────────────────────────
+        if "authentication" in stderr.lower() or "403" in stderr or "401" in stderr:
+            return ToolResult(
+                success=False,
+                error=(
+                    f"Push failed due to authentication error.\n{stderr}\n\n"
+                    "Set up credentials with 'git credential-manager' or "
+                    "a personal access token."
+                ),
+            )
+
+        return ToolResult(
+            success=False,
+            error=f"Push failed: {stderr}",
         )

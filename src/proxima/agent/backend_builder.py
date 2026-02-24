@@ -502,10 +502,22 @@ class BackendBuilder:
         # Get backend config
         config = self.profile_loader.get_backend_config(backend_name)
         if config is None:
-            result.status = BuildStatus.FAILED
-            result.error_message = f"Unknown backend: {backend_name}"
-            result.completed_at = datetime.now()
-            return result
+            # Generic fallback: auto-detect build system when no YAML profile matches
+            config = self._detect_generic_build_config(backend_name)
+            if config is None:
+                result.status = BuildStatus.FAILED
+                result.error_message = (
+                    f"Unknown backend: {backend_name}. "
+                    "No YAML profile found and no build system "
+                    "(setup.py, pyproject.toml, Makefile, CMakeLists.txt) detected."
+                )
+                result.completed_at = datetime.now()
+                return result
+            logger.info(
+                "No YAML profile for '%s'; using generic %s build",
+                backend_name,
+                config.get("_detected_system", "unknown"),
+            )
         
         # Apply profile overrides
         if profile:
@@ -692,7 +704,74 @@ class BackendBuilder:
             tracker.on_progress(callback)
         
         return tracker
-    
+
+    # ── Generic fallback when no YAML profile matches ─────────────
+
+    def _detect_generic_build_config(
+        self,
+        backend_name: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Auto-detect a build configuration when no YAML profile exists.
+
+        Mirrors the bridge handler's ``_build_generic`` logic so that the
+        async builder path also supports profile-less builds.
+
+        Probes for ``setup.py``, ``pyproject.toml``, ``Makefile``, and
+        ``CMakeLists.txt`` in the working directory then synthesises an
+        equivalent ``config`` dict that :meth:`build` can consume.
+
+        Returns:
+            A synthetic config dict or ``None`` when no build system is
+            detected.
+        """
+        cwd = os.getcwd()
+
+        # Probe for known build systems
+        if os.path.isfile(os.path.join(cwd, "setup.py")):
+            build_cmd = f"{sys.executable} -m pip install -e ."
+            detected = "setup.py"
+        elif os.path.isfile(os.path.join(cwd, "pyproject.toml")):
+            build_cmd = f"{sys.executable} -m pip install -e ."
+            detected = "pyproject.toml"
+        elif os.path.isfile(os.path.join(cwd, "Makefile")):
+            build_cmd = "make"
+            detected = "Makefile"
+        elif os.path.isfile(os.path.join(cwd, "CMakeLists.txt")):
+            if platform.system() == "Windows":
+                build_cmd = (
+                    "if not exist build mkdir build "
+                    "&& cd build && cmake .. && cmake --build ."
+                )
+            else:
+                build_cmd = (
+                    "mkdir -p build && cd build && cmake .. && cmake --build ."
+                )
+            detected = "CMakeLists.txt"
+        else:
+            return None
+
+        logger.info(
+            "Generic build detection for '%s': found %s", backend_name, detected
+        )
+
+        return {
+            "name": backend_name,
+            "description": f"Auto-detected build via {detected}",
+            "dependencies": [],
+            "build_steps": [
+                {
+                    "step_id": "generic_build",
+                    "command": build_cmd,
+                    "description": f"Build via {detected}",
+                    "timeout": 600,
+                    "retry": 1,  # one automatic retry on failure
+                    "working_dir": cwd,
+                }
+            ],
+            "verification": {},
+            "_detected_system": detected,
+        }
+
     async def _install_dependencies(
         self,
         config: Dict[str, Any],

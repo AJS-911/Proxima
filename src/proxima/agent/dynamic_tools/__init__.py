@@ -658,6 +658,18 @@ from .intent_tool_bridge import (
 # Import tools to trigger auto-registration
 from . import tools
 
+# Phase 16: Additional Agent Capabilities
+try:
+    from .tools.todos_tool import TodosTool
+except ImportError:
+    TodosTool = None  # type: ignore[assignment, misc]
+
+try:
+    from .tools.web_tools import WebFetchTool, AgenticFetchTool
+except ImportError:
+    WebFetchTool = None  # type: ignore[assignment, misc]
+    AgenticFetchTool = None  # type: ignore[assignment, misc]
+
 __all__ = [
     # Core interfaces
     "ToolInterface",
@@ -1208,6 +1220,11 @@ __all__ = [
     "is_blocked",
     "is_dangerous",
     "is_safe",
+
+    # Phase 16: Additional Agent Capabilities
+    "TodosTool",
+    "WebFetchTool",
+    "AgenticFetchTool",
 ]
 
 

@@ -475,6 +475,46 @@ class ScriptExecutor:
         env.update(self.env_vars)
         if env_vars:
             env.update(env_vars)
+
+        # ── Phase 4.3: Virtual-environment auto-detection ─────────
+        # Check if the script's directory contains a virtual environment
+        # (venv/, .venv/, env/).  If so, update PATH and VIRTUAL_ENV so
+        # the interpreter launched by ``_execute_command`` inherits the
+        # activated environment.
+        script_dir = str(path.resolve().parent)
+        for venv_name in ("venv", ".venv", "env"):
+            venv_path = os.path.join(script_dir, venv_name)
+            if os.path.isdir(venv_path):
+                if platform.system() == "Windows":
+                    scripts_dir = os.path.join(venv_path, "Scripts")
+                    activate_ps1 = os.path.join(scripts_dir, "Activate.ps1")
+                    if os.path.isdir(scripts_dir) and os.path.isfile(activate_ps1):
+                        # Prepend the venv Scripts dir to PATH so the
+                        # correct interpreter and packages are picked up.
+                        env["PATH"] = scripts_dir + os.pathsep + env.get("PATH", "")
+                        env["VIRTUAL_ENV"] = venv_path
+                        # Also use the venv's Python interpreter directly
+                        venv_python = os.path.join(scripts_dir, "python.exe")
+                        if (
+                            script_info.language == ScriptLanguage.PYTHON
+                            and os.path.isfile(venv_python)
+                        ):
+                            cmd[0] = venv_python
+                        logger.debug("Activated venv for script: %s", venv_path)
+                else:
+                    bin_dir = os.path.join(venv_path, "bin")
+                    activate_sh = os.path.join(bin_dir, "activate")
+                    if os.path.isdir(bin_dir) and os.path.isfile(activate_sh):
+                        env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+                        env["VIRTUAL_ENV"] = venv_path
+                        venv_python = os.path.join(bin_dir, "python")
+                        if (
+                            script_info.language == ScriptLanguage.PYTHON
+                            and os.path.isfile(venv_python)
+                        ):
+                            cmd[0] = venv_python
+                        logger.debug("Activated venv for script: %s", venv_path)
+                break  # use the first detected venv
         
         return await self._execute_command(
             cmd=cmd,

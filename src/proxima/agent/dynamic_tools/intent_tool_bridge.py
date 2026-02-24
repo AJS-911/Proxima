@@ -66,6 +66,7 @@ Architecture Notes
 from __future__ import annotations
 
 import getpass
+import json
 import logging
 import difflib
 import hashlib
@@ -163,6 +164,26 @@ try:
 except ImportError:
     _ADMIN_HANDLER_AVAILABLE = False
 
+# Phase 9 — Terminal orchestrator for multi-terminal monitoring
+try:
+    from proxima.agent.terminal_orchestrator import (
+        TerminalOrchestrator,
+        get_terminal_orchestrator,
+    )
+    _TERMINAL_ORCHESTRATOR_AVAILABLE = True
+except ImportError:
+    _TERMINAL_ORCHESTRATOR_AVAILABLE = False
+
+# Phase 11 — Agent error handler for classification and retry
+try:
+    from proxima.agent.agent_error_handler import (
+        AgentErrorHandler,
+        ErrorCategory as _ErrorCategory,
+    )
+    _ERROR_HANDLER_AVAILABLE = True
+except ImportError:
+    _ERROR_HANDLER_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -208,7 +229,7 @@ INTENT_TO_TOOL: Dict[IntentType, Optional[str]] = {
     IntentType.COPY_FILE:              "run_command",  # no dedicated copy tool; uses cp/copy
     IntentType.MOVE_FILE:              "move_file",
     IntentType.SEARCH_FILE:            "search_files",
-    IntentType.CREATE_DIRECTORY:       "run_command",  # mkdir via shell
+    IntentType.CREATE_DIRECTORY:       "create_directory",  # dedicated tool (Phase 1)
     IntentType.DELETE_DIRECTORY:       "run_command",  # rmdir via shell
     IntentType.COPY_DIRECTORY:         "run_command",  # xcopy/cp -r via shell
     # ── Git Basic ─────────────────────────────────────────────────
@@ -522,6 +543,26 @@ _PHASE8_INTENTS = frozenset({
 })
 
 # URL normalisation regex for GitHub clone operations (Step 8.1)
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 9 — Multi-Terminal Monitoring and Result Display
+# ═══════════════════════════════════════════════════════════════════════
+
+_PHASE9_INTENTS = frozenset({
+    IntentType.TERMINAL_MONITOR,
+    IntentType.TERMINAL_OUTPUT,
+    IntentType.TERMINAL_KILL,
+    IntentType.TERMINAL_LIST,
+    IntentType.ANALYZE_RESULTS,
+    IntentType.EXPORT_RESULTS,
+})
+
+# Shared icon map for terminal state display (used by monitor & list handlers)
+_TERMINAL_STATE_ICONS: dict[str, str] = {
+    "RUNNING": "🟢", "COMPLETED": "✅", "FAILED": "❌",
+    "CANCELLED": "⛔", "TIMEOUT": "⏱️", "PENDING": "⏳",
+    "STARTING": "🔄",
+}
+
 _GIT_URL_HTTPS_RE = re.compile(
     r"https?://(?:www\.)?github\.com/[\w\-\.]+/[\w\-\.]+(?:\.git)?$",
     re.IGNORECASE,
@@ -1039,9 +1080,7 @@ def _build_args_run_command(intent: Intent, cwd: str) -> Dict[str, Any]:
     if it == IntentType.CREATE_DIRECTORY:
         path = _entity_value(intent, "path", "dirname", "directory")
         target = resolve_path(path, cwd)
-        if os.name == "nt":
-            return {"command": f'New-Item -ItemType Directory -Path "{target}" -Force', "working_directory": cwd}
-        return {"command": f'mkdir -p "{target}"', "working_directory": cwd}
+        return {"path": target, "parents": True, "exist_ok": True}
 
     if it == IntentType.DELETE_DIRECTORY:
         path = _entity_value(intent, "path", "dirname", "directory")
@@ -1396,6 +1435,20 @@ class IntentToolBridge:
         self._admin_escalation_count: int = 0
         # Phase 8 — LLM reference for auto-commit-message generation
         self._llm_provider: Optional[Any] = None
+        # Phase 9 — cached terminal orchestrator
+        self._terminal_orchestrator: Optional[Any] = None
+        # Phase 11 — error handler for classification, recovery, and retry
+        self._error_handler: Optional[AgentErrorHandler] = None  # type: ignore[type-arg]
+        if _ERROR_HANDLER_AVAILABLE:
+            try:
+                dep_mgr = self._get_dep_manager() if _DEP_MANAGER_AVAILABLE else None
+                self._error_handler = AgentErrorHandler(dep_manager=dep_mgr)
+            except Exception:
+                pass
+        # Phase 11 — per-operation retry counts for this bridge lifetime
+        self._dispatch_retry_counts: Dict[str, int] = {}
+        # Phase 11 — most recent session context (for consent cache lookups)
+        self._last_session_context: Optional[SessionContext] = None
 
     def _get_dep_manager(self) -> Optional[ProjectDependencyManager]:
         """Return a cached ``ProjectDependencyManager`` instance."""
@@ -1447,6 +1500,12 @@ class IntentToolBridge:
         cwd = cwd or os.getcwd()
         start = time.monotonic()
 
+        # Phase 11: stash session_context so _request_consent can check
+        # session-level consent cache without extra parameters.
+        self._last_session_context = session_context
+        # Phase 11: clear retry counts per top-level dispatch
+        self._dispatch_retry_counts.clear()
+
         tool_name = INTENT_TO_TOOL.get(intent.intent_type)
 
         # Phase 6: Custom handlers for backend operations and undo/redo
@@ -1490,6 +1549,20 @@ class IntentToolBridge:
                 phase8_result,
             )
             return phase8_result
+
+        # Phase 9: Multi-terminal monitoring and result display
+        phase9_result = self._dispatch_phase9(intent, cwd, session_context)
+        if phase9_result is not None:
+            elapsed = (time.monotonic() - start) * 1000
+            phase9_result.execution_time_ms = elapsed
+            self._capture_output(intent, phase9_result, session_context)
+            self._record(
+                intent,
+                phase9_result.tool_name or intent.intent_type.name,
+                {},
+                phase9_result,
+            )
+            return phase9_result
 
         # Intents with no direct tool mapping
         if tool_name is None:
@@ -1625,13 +1698,30 @@ class IntentToolBridge:
 
         except Exception as exc:
             elapsed = (time.monotonic() - start) * 1000
-            logger.error("Tool %s failed: %s", tool_name, exc, exc_info=True)
+            logger.exception("Tool %s failed: %s", tool_name, exc)
+
+            # Phase 11: classify the error and produce a rich report
+            error_text = str(exc)
+            exit_code = getattr(exc, "returncode", None)
+            if exit_code is None:
+                exit_code = 1
+
+            if self._error_handler is not None:
+                report_msg, category, fix = self._error_handler.format_error_report(
+                    operation=tool_name, error_output=error_text, exit_code=exit_code,
+                )
+            else:
+                report_msg = f"❌ {tool_name} failed: {exc}"
+                category = None
+                fix = None
+
             return ToolResult(
                 success=False,
-                error=str(exc),
+                error=error_text,
                 tool_name=tool_name,
                 execution_time_ms=elapsed,
-                message=f"❌ {tool_name} failed: {exc}",
+                message=report_msg,
+                suggestions=[fix] if fix else [],
             )
 
     def dispatch_multi_step(
@@ -1758,7 +1848,23 @@ class IntentToolBridge:
         rejects the ``ConsentRequest`` (e.g. old callback that only
         accepts strings), a fallback to the string representation is
         attempted automatically.
+
+        Phase 11 enhancement: if a ``SessionContext`` is available and
+        the consent type has been ``APPROVED_SESSION``, skip the prompt.
         """
+        # Phase 11: check session-level consent cache
+        if hasattr(payload, "consent_type"):
+            ct = payload.consent_type
+            ct_name = ct.name if hasattr(ct, "name") else str(ct)
+            session_ctx = getattr(self, "_last_session_context", None)
+            if session_ctx is not None:
+                cached = getattr(session_ctx, "session_consents", {}).get(ct_name)
+                if cached == "APPROVED_SESSION":
+                    logger.info(
+                        "Phase 11: auto-approving %s (APPROVED_SESSION)", ct_name,
+                    )
+                    return True
+
         if self._consent_callback is None:
             # No callback — deny by default
             return False
@@ -1996,20 +2102,81 @@ class IntentToolBridge:
         *,
         tool_inst=None,
     ) -> ToolResult:
-        """Attempt automatic error detection and fix (Phase 5, Step 5.3).
+        """Attempt automatic error detection and fix (Phase 5, Step 5.3 + Phase 11).
 
-        If the ``ProjectDependencyManager`` identifies a fixable error
-        pattern in the failed output, this method:
-        1. Asks for user consent to apply the fix.
-        2. Executes the fix command.
-        3. Retries the original command.
-        4. Returns either the retry result or the original failure
-           (annotated with the fix suggestion).
+        Enhanced with Phase 11 error classification and category-aware retry:
+        1. Classify the error via ``AgentErrorHandler`` (if available).
+        2. For *network/timeout/build* errors, attempt category-specific
+           automatic retries (with exponential backoff, doubled timeout,
+           or verbose flag) **before** falling back to the dependency-fix
+           path.
+        3. For *dependency* errors, use the ``ProjectDependencyManager``
+           fix-then-retry workflow.
+        4. Annotate the result with classification and suggestions.
         """
         error_output = str(result.result or "") + str(result.error or "")
         if not error_output:
             return result
 
+        # --- Phase 11: classify the error --------------------------------
+        category: "Optional[_ErrorCategory]" = None
+        fix_suggestion: Optional[str] = None
+
+        if self._error_handler is not None:
+            try:
+                _raw_exit = getattr(result, "exit_code", None)
+                _exit_code = _raw_exit if _raw_exit is not None else 1
+                category, _summary, fix_suggestion = self._error_handler.classify_output(
+                    error_output, exit_code=_exit_code,
+                )
+            except Exception:
+                pass
+
+        # --- Phase 11: category-aware automatic retry --------------------
+        retry_key = f"{tool_name}:{id(intent)}"
+        attempt = self._dispatch_retry_counts.get(retry_key, 0)
+
+        if category is not None and self._error_handler is not None:
+            should_retry, delay = self._error_handler.should_auto_retry(category, attempt)
+            if should_retry:
+                self._dispatch_retry_counts[retry_key] = attempt + 1
+                category_name = category.name if hasattr(category, "name") else str(category)
+                logger.info(
+                    "Phase 11: auto-retry %s (category=%s, attempt=%d, delay=%.1fs)",
+                    tool_name, category_name, attempt + 1, delay,
+                )
+                if delay > 0:
+                    time.sleep(delay)
+
+                # Category-specific argument mutations
+                retry_args = dict(args)
+                if category.name == "BUILD":
+                    # Retry build ops with verbose flag
+                    cmd = retry_args.get("command", "")
+                    if cmd and "--verbose" not in cmd:
+                        retry_args["command"] = cmd + " --verbose"
+                elif category.name == "TIMEOUT":
+                    # Double any timeout argument
+                    for k in ("timeout", "timeout_seconds", "_timeout"):
+                        if k in retry_args:
+                            try:
+                                retry_args[k] = int(retry_args[k]) * 2
+                            except (ValueError, TypeError):
+                                pass
+
+                retry_result = self._execute_for_retry(
+                    intent, retry_args, cwd, tool_inst, execution_context,
+                )
+                if retry_result is not None and retry_result.success:
+                    retry_result.message = (
+                        f"✅ Succeeded on retry (attempt {attempt + 2}).\n\n"
+                        + (retry_result.message or str(retry_result.result or ""))
+                    )
+                    self._capture_output(intent, retry_result, session_context)
+                    return retry_result
+                # Retry failed — fall through to dependency-fix path
+
+        # --- Original Phase 5 dependency-fix path ------------------------
         mgr = self._get_dep_manager() or ProjectDependencyManager()
         fix_cmd = mgr.detect_and_fix_errors(error_output, cwd)
         if fix_cmd is None:
@@ -2024,10 +2191,21 @@ class IntentToolBridge:
                     (result.message or "")
                     + f"\n\n🔍 **Detected issues:**\n{extra}"
                 )
+            # Phase 11: append classification + suggestion even when no dep fix
+            if fix_suggestion and self._error_handler is not None:
+                result.message = (
+                    (result.message or "")
+                    + f"\n\n💡 **Suggested fix:** {fix_suggestion}"
+                )
             return result
 
+        # Determine fix risk via Phase 11 handler
+        risk = "medium"
+        if category is not None and self._error_handler is not None:
+            risk = self._error_handler.get_fix_risk_level(category)
+
         # Ask user for consent to apply the fix
-        consent_desc = f"Auto-fix: {fix_cmd}"
+        consent_desc = f"Auto-fix ({risk} risk): {fix_cmd}"
         if not self._request_consent(intent, consent_desc):
             result.message = (
                 (result.message or "")
@@ -2063,18 +2241,10 @@ class IntentToolBridge:
 
         # Retry the original command
         logger.info("Phase 5: retrying original command after fix")
-        if tool_inst is not None:
-            try:
-                from proxima.agent.dynamic_tools.execution_context import ExecutionContext
-                ctx = execution_context or ExecutionContext(current_directory=cwd)
-                retry_result = tool_inst.execute(args, ctx)
-            except Exception as exc:
-                result.message = (
-                    (result.message or "")
-                    + f"\n\n✅ Fix applied (`{fix_cmd}`), but retry failed: {exc}"
-                )
-                return result
-        else:
+        retry_result = self._execute_for_retry(
+            intent, args, cwd, tool_inst, execution_context,
+        )
+        if retry_result is None:
             retry_result = self._fallback_execute(intent, args, cwd)
 
         if retry_result.success:
@@ -2094,6 +2264,27 @@ class IntentToolBridge:
                 + f"Retry error: {retry_result.error}"
             )
             return result
+
+    # ── Phase 11: helper to execute a single retry attempt ───────────
+
+    def _execute_for_retry(
+        self,
+        intent: Intent,
+        args: Dict[str, Any],
+        cwd: str,
+        tool_inst: Any,
+        execution_context: Any,
+    ) -> Optional[ToolResult]:
+        """Run the tool once, returning *None* only on internal error."""
+        if tool_inst is not None:
+            try:
+                from proxima.agent.dynamic_tools.execution_context import ExecutionContext
+                ctx = execution_context or ExecutionContext(current_directory=cwd)
+                return tool_inst.execute(args, ctx)
+            except Exception as exc:
+                logger.warning("Retry execution failed: %s", exc)
+                return ToolResult(success=False, error=str(exc), tool_name=intent.intent_type.name)
+        return self._fallback_execute(intent, args, cwd)
 
     def check_backend_dependencies(
         self,
@@ -2932,6 +3123,50 @@ class IntentToolBridge:
                 lineterm="",
             ))
             diff_text = "\n".join(diff_lines[:60])
+
+        # ── Step 4b: Second consent — approve the diff before write ──
+        apply_desc = (
+            f"Apply the following change to {os.path.basename(file_path)}?\n"
+            f"```diff\n{diff_text[:1500]}\n```"
+        )
+        apply_payload: Any = apply_desc
+        if _SAFETY_AVAILABLE:
+            try:
+                apply_payload = ConsentRequest(
+                    id=f"backend_modify_apply_{int(time.time())}",
+                    consent_type=ConsentType.BACKEND_MODIFICATION,
+                    operation="backend_modify_apply",
+                    description=apply_desc,
+                    details={
+                        "file": file_path,
+                        "backend": backend_raw or "",
+                        "mod_type": mod_type,
+                        "diff_preview": diff_text[:2000],
+                    },
+                    tool_name="backend_modify",
+                    risk_level="high",
+                    reversible=True,
+                )
+            except Exception:
+                pass
+
+        if not self._request_consent(intent, apply_payload):
+            # User declined after seeing the diff — roll back the checkpoint
+            if cp_mgr and checkpoint_id:
+                try:
+                    cp_mgr.undo()
+                except Exception:
+                    pass
+            return ToolResult(
+                success=False,
+                error="User declined after reviewing diff preview",
+                tool_name="backend_modify",
+                execution_time_ms=(time.monotonic() - start) * 1000,
+                message=(
+                    f"⚠️ Modification cancelled after diff review.\n\n"
+                    f"**Diff preview:**\n```diff\n{diff_text[:1500]}\n```"
+                ),
+            )
 
         # ── Step 5: Apply modification ───────────────────────────
         expected_hash = hashlib.sha256(modified_content.encode("utf-8")).hexdigest()
@@ -5669,6 +5904,551 @@ class IntentToolBridge:
             execution_time_ms=elapsed,
             message=msg,
         )
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Phase 9 — Multi-Terminal Monitoring and Result Display
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _dispatch_phase9(
+        self,
+        intent: Intent,
+        cwd: str,
+        session_context: Optional[SessionContext] = None,
+    ) -> Optional[ToolResult]:
+        """Route Phase 9 intents to terminal / result handlers.
+
+        Returns ``None`` if the intent is not Phase 9.
+        """
+        if intent.intent_type not in _PHASE9_INTENTS:
+            return None
+
+        it = intent.intent_type
+
+        if it == IntentType.TERMINAL_MONITOR:
+            return self._handle_terminal_monitor(intent, cwd, session_context)
+        if it == IntentType.TERMINAL_OUTPUT:
+            return self._handle_terminal_output(intent, cwd, session_context)
+        if it == IntentType.TERMINAL_KILL:
+            return self._handle_terminal_kill(intent, cwd, session_context)
+        if it == IntentType.TERMINAL_LIST:
+            return self._handle_terminal_list(intent, cwd, session_context)
+        if it == IntentType.ANALYZE_RESULTS:
+            return self._handle_analyze_results(intent, cwd, session_context)
+        if it == IntentType.EXPORT_RESULTS:
+            return self._handle_export_results(intent, cwd, session_context)
+
+        return None
+
+    # ── Step 9.2a: TERMINAL_MONITOR — spawn a monitored terminal ──
+
+    def _handle_terminal_monitor(
+        self,
+        intent: Intent,
+        cwd: str,
+        session_context: Optional[SessionContext] = None,
+    ) -> ToolResult:
+        """Handle ``TERMINAL_MONITOR``: show active terminal sessions.
+
+        Calls ``TerminalOrchestrator.get_all_terminals()`` and presents
+        a detailed table including the last 3 lines of output for every
+        running terminal.
+        """
+        start = time.monotonic()
+
+        if not _TERMINAL_ORCHESTRATOR_AVAILABLE:
+            return ToolResult(
+                success=False,
+                error="Terminal orchestrator not available",
+                tool_name="terminal_monitor",
+                message="❌ Terminal orchestrator module is not available.",
+            )
+
+        orch = get_terminal_orchestrator()
+        all_terms = orch.get_all_terminals()
+        elapsed = (time.monotonic() - start) * 1000
+
+        if not all_terms:
+            return ToolResult(
+                success=True,
+                result={"terminals": [], "count": 0},
+                tool_name="terminal_monitor",
+                execution_time_ms=elapsed,
+                message="📋 No active or recent terminals to monitor.",
+            )
+
+        # Build a detailed table per the Phase 9 spec
+        lines: list[str] = [
+            f"📋 **Terminal Monitor — {len(all_terms)} session(s):**",
+            "",
+            "| # | Name | Command | State | Duration | Output Lines |",
+            "|---|------|---------|-------|----------|--------------|",
+        ]
+
+        for i, t in enumerate(all_terms, 1):
+            icon = _TERMINAL_STATE_ICONS.get(t["state"], "❓")
+            elapsed_s = t.get("elapsed_seconds", 0)
+            elapsed_str = (
+                f"{elapsed_s / 60:.1f}m" if elapsed_s >= 60
+                else f"{elapsed_s:.0f}s"
+            )
+            lines.append(
+                f"| {i} | {t['name'][:20]} | "
+                f"`{t['command'][:30]}` | "
+                f"{icon} {t['state']} | "
+                f"{elapsed_str} | "
+                f"{t.get('output_lines_count', 0)} |"
+            )
+
+            # For running terminals, include last 3 lines of output
+            if t["state"] in ("RUNNING", "STARTING"):
+                last_lines = t.get("last_5_lines", [])[-3:]
+                if last_lines:
+                    lines.append("")
+                    lines.append(f"  _Recent output (terminal {i}):_")
+                    lines.append("  ```")
+                    for ln in last_lines:
+                        lines.append(f"  {ln}")
+                    lines.append("  ```")
+
+        # Update session context with current terminal state
+        if session_context is not None:
+            active_terminals = getattr(
+                session_context, "active_terminals", {},
+            )
+            for t in all_terms:
+                active_terminals[t["id"]] = {
+                    "name": t["name"],
+                    "command": t["command"],
+                    "state": t["state"],
+                    "pid": t.get("pid"),
+                }
+            session_context.active_terminals = active_terminals
+
+        return ToolResult(
+            success=True,
+            result={"terminals": all_terms, "count": len(all_terms)},
+            tool_name="terminal_monitor",
+            execution_time_ms=elapsed,
+            message="\n".join(lines),
+        )
+
+    # ── Step 9.2b: TERMINAL_OUTPUT — show terminal output ─────────
+
+    def _handle_terminal_output(
+        self,
+        intent: Intent,
+        cwd: str,
+        session_context: Optional[SessionContext] = None,
+    ) -> ToolResult:
+        """Handle ``TERMINAL_OUTPUT``: show the output of a terminal.
+
+        Resolves the terminal from a fuzzy hint (name, ordinal, ID),
+        then returns the last N lines from the circular buffer.
+        """
+        start = time.monotonic()
+
+        if not _TERMINAL_ORCHESTRATOR_AVAILABLE:
+            return ToolResult(
+                success=False,
+                error="Terminal orchestrator not available",
+                tool_name="terminal_output",
+                message="❌ Terminal orchestrator module is not available.",
+            )
+
+        orch = get_terminal_orchestrator()
+
+        # Resolve terminal reference
+        hint = (
+            _entity_value(intent, "terminal_id", "terminal", "name", "id")
+            or "last"
+        )
+        terminal_id = orch.find_terminal(hint)
+
+        if terminal_id is None:
+            return ToolResult(
+                success=False,
+                error=f"No terminal matching '{hint}'",
+                tool_name="terminal_output",
+                execution_time_ms=(time.monotonic() - start) * 1000,
+                message=(
+                    f"❌ Could not find terminal matching '{hint}'.\n"
+                    "Use `list terminals` to see available terminals."
+                ),
+            )
+
+        # Parse tail_lines from entities
+        tail_raw = _entity_value(intent, "lines", "tail", "count")
+        tail_lines = 50
+        if tail_raw:
+            try:
+                tail_lines = int(tail_raw)
+            except (ValueError, TypeError):
+                pass
+
+        output_text = orch.get_output(terminal_id, tail_lines=tail_lines)
+        info = orch.get_terminal_info(terminal_id)
+        name = info.get("name", terminal_id) if info else terminal_id
+        state = info.get("state", "UNKNOWN") if info else "UNKNOWN"
+
+        elapsed = (time.monotonic() - start) * 1000
+
+        msg_parts = [
+            f"📋 Output from **{name}** (state: {state}):",
+            f"```",
+            output_text[:3000] if output_text else "(no output yet)",
+            f"```",
+        ]
+        if output_text and len(output_text) > 3000:
+            msg_parts.append(f"_(output truncated — showing last {tail_lines} lines)_")
+
+        return ToolResult(
+            success=True,
+            result={
+                "terminal_id": terminal_id,
+                "name": name,
+                "state": state,
+                "output": output_text[:5000],
+                "lines_requested": tail_lines,
+            },
+            tool_name="terminal_output",
+            execution_time_ms=elapsed,
+            message="\n".join(msg_parts),
+        )
+
+    # ── Step 9.2c: TERMINAL_KILL — kill a terminal process ────────
+
+    def _handle_terminal_kill(
+        self,
+        intent: Intent,
+        cwd: str,
+        session_context: Optional[SessionContext] = None,
+    ) -> ToolResult:
+        """Handle ``TERMINAL_KILL``: kill a running terminal.
+
+        Requires consent before killing, then delegates to the
+        ``TerminalOrchestrator.kill_terminal`` method.
+        """
+        start = time.monotonic()
+
+        if not _TERMINAL_ORCHESTRATOR_AVAILABLE:
+            return ToolResult(
+                success=False,
+                error="Terminal orchestrator not available",
+                tool_name="terminal_kill",
+                message="❌ Terminal orchestrator module is not available.",
+            )
+
+        orch = get_terminal_orchestrator()
+
+        # Resolve terminal reference
+        hint = (
+            _entity_value(intent, "terminal_id", "terminal", "name", "id")
+            or "last"
+        )
+        terminal_id = orch.find_terminal(hint)
+
+        if terminal_id is None:
+            return ToolResult(
+                success=False,
+                error=f"No terminal matching '{hint}'",
+                tool_name="terminal_kill",
+                execution_time_ms=(time.monotonic() - start) * 1000,
+                message=(
+                    f"❌ Could not find terminal matching '{hint}'.\n"
+                    "Use `list terminals` to see available terminals."
+                ),
+            )
+
+        info = orch.get_terminal_info(terminal_id)
+        name = info.get("name", terminal_id) if info else terminal_id
+        pid = info.get("pid") if info else None
+        command = info.get("command", "") if info else ""
+
+        # Consent flow — killing is a destructive operation
+        consent_desc = (
+            f"Kill terminal '{name}' (PID {pid})?\n"
+            f"Command: {command[:80]}"
+        )
+        if not self._request_consent(intent, consent_desc):
+            return ToolResult(
+                success=False,
+                error="User declined to kill terminal",
+                tool_name="terminal_kill",
+                execution_time_ms=(time.monotonic() - start) * 1000,
+                message=f"⚠️ Kill for terminal '{name}' was declined.",
+            )
+
+        success = orch.kill_terminal(terminal_id)
+        elapsed = (time.monotonic() - start) * 1000
+
+        # Update session context (use active_terminals for consistency)
+        if session_context is not None:
+            terminals = getattr(session_context, "active_terminals", {})
+            if terminal_id in terminals:
+                terminals[terminal_id]["state"] = "CANCELLED"
+
+        if success:
+            return ToolResult(
+                success=True,
+                result={"terminal_id": terminal_id, "killed": True},
+                tool_name="terminal_kill",
+                execution_time_ms=elapsed,
+                message=f"✅ Terminal '{name}' (PID {pid}) has been killed.",
+            )
+        return ToolResult(
+            success=False,
+            error=f"Failed to kill terminal '{name}'",
+            tool_name="terminal_kill",
+            execution_time_ms=elapsed,
+            message=f"❌ Failed to kill terminal '{name}'.",
+        )
+
+    # ── Step 9.2d: TERMINAL_LIST — list all terminals ─────────────
+
+    def _handle_terminal_list(
+        self,
+        intent: Intent,
+        cwd: str,
+        session_context: Optional[SessionContext] = None,
+    ) -> ToolResult:
+        """Handle ``TERMINAL_LIST``: list all active/recent terminals.
+
+        Returns a compact table format for TUI display.
+        """
+        start = time.monotonic()
+
+        if not _TERMINAL_ORCHESTRATOR_AVAILABLE:
+            return ToolResult(
+                success=False,
+                error="Terminal orchestrator not available",
+                tool_name="terminal_list",
+                message="❌ Terminal orchestrator module is not available.",
+            )
+
+        orch = get_terminal_orchestrator()
+        all_terms = orch.get_all_terminals()
+        elapsed = (time.monotonic() - start) * 1000
+
+        if not all_terms:
+            return ToolResult(
+                success=True,
+                result={"terminals": [], "count": 0},
+                tool_name="terminal_list",
+                execution_time_ms=elapsed,
+                message="📋 No active or recent terminals.",
+            )
+
+        # Build compact list — name, state, elapsed only (per spec)
+        lines = [f"📋 **{len(all_terms)} terminal(s):**", ""]
+        for i, t in enumerate(all_terms, 1):
+            icon = _TERMINAL_STATE_ICONS.get(t["state"], "❓")
+            elapsed_s = t.get("elapsed_seconds", 0)
+            elapsed_str = (
+                f"{elapsed_s / 60:.1f}m" if elapsed_s >= 60
+                else f"{elapsed_s:.0f}s"
+            )
+            lines.append(
+                f"{i}. {icon} **{t['name'][:25]}** — "
+                f"{t['state']} ({elapsed_str})"
+            )
+
+        return ToolResult(
+            success=True,
+            result={"terminals": all_terms, "count": len(all_terms)},
+            tool_name="terminal_list",
+            execution_time_ms=elapsed,
+            message="\n".join(lines),
+        )
+
+    # ── Step 9.5: ANALYZE_RESULTS — LLM-based result analysis ────
+
+    def _handle_analyze_results(
+        self,
+        intent: Intent,
+        cwd: str,
+        session_context: Optional[SessionContext] = None,
+    ) -> ToolResult:
+        """Handle ``ANALYZE_RESULTS``: analyse terminal / experiment output.
+
+        If a specific terminal is referenced, analyses that terminal's
+        output.  Otherwise, analyses the most recently completed terminal.
+        Uses the LLM provider for intelligent analysis when available,
+        otherwise falls back to rule-based analysis.
+        """
+        start = time.monotonic()
+
+        if not _TERMINAL_ORCHESTRATOR_AVAILABLE:
+            return ToolResult(
+                success=False,
+                error="Terminal orchestrator not available",
+                tool_name="analyze_results",
+                message="❌ Terminal orchestrator module is not available.",
+            )
+
+        orch = get_terminal_orchestrator()
+
+        # Resolve terminal reference
+        hint = (
+            _entity_value(intent, "terminal_id", "terminal", "name", "id")
+            or "last"
+        )
+        terminal_id = orch.find_terminal(hint)
+
+        if terminal_id is None:
+            # No terminal to analyse — check if there are any
+            all_t = orch.get_all_terminals()
+            if not all_t:
+                return ToolResult(
+                    success=True,
+                    result=None,
+                    tool_name="analyze_results",
+                    execution_time_ms=(time.monotonic() - start) * 1000,
+                    message="📊 No terminal output available for analysis.",
+                )
+            # Pick the most recent completed terminal
+            for t in all_t:
+                if t["state"] in ("COMPLETED", "FAILED"):
+                    terminal_id = t["id"]
+                    break
+            if terminal_id is None:
+                terminal_id = all_t[0]["id"]
+
+        # Get structured result + analysis
+        parsed = orch.parse_terminal_result(terminal_id)
+        analysis = orch.analyze_result(
+            terminal_id,
+            llm_provider=self._llm_provider,
+        )
+
+        elapsed = (time.monotonic() - start) * 1000
+
+        # Push a structured analysis result to the Result Tab (spec 9.5)
+        try:
+            from proxima.agent.terminal_tui_bridge import get_terminal_tui_bridge
+            bridge = get_terminal_tui_bridge()
+            if bridge is not None:
+                analysis_result = {
+                    "id": f"analysis_{terminal_id}",
+                    "name": f"Analysis: {parsed.get('name', terminal_id)}",
+                    "status": parsed.get("status", "unknown"),
+                    "backend": "Terminal",
+                    "duration": parsed.get("duration", 0),
+                    "success_rate": 1.0 if parsed.get("status") == "success" else 0.0,
+                    "avg_fidelity": parsed.get("metrics", {}).get("fidelity", 0.0),
+                    "total_shots": parsed.get("metrics", {}).get("tests_passed", 0),
+                    "exit_code": parsed.get("return_code"),
+                    "command": parsed.get("command", ""),
+                    "output": analysis[:500],
+                    "metrics": parsed.get("metrics", {}),
+                    "metadata": {
+                        "terminal_id": terminal_id,
+                        "analysis_type": "llm" if self._llm_provider else "rule_based",
+                    },
+                    "timestamp": parsed.get("timestamp", ""),
+                }
+                bridge.push_result(analysis_result)
+        except Exception:
+            pass  # Result Tab push is best-effort
+
+        return ToolResult(
+            success=True,
+            result={
+                "terminal_id": terminal_id,
+                "parsed": parsed,
+                "analysis": analysis,
+            },
+            tool_name="analyze_results",
+            execution_time_ms=elapsed,
+            message=analysis,
+        )
+
+    # ── Step 9.4: EXPORT_RESULTS — export terminal results ────────
+
+    def _handle_export_results(
+        self,
+        intent: Intent,
+        cwd: str,
+        session_context: Optional[SessionContext] = None,
+    ) -> ToolResult:
+        """Handle ``EXPORT_RESULTS``: export terminal output to a file.
+
+        Parses terminal output into a structured result and writes it
+        as JSON.
+        """
+        start = time.monotonic()
+
+        if not _TERMINAL_ORCHESTRATOR_AVAILABLE:
+            return ToolResult(
+                success=False,
+                error="Terminal orchestrator not available",
+                tool_name="export_results",
+                message="❌ Terminal orchestrator module is not available.",
+            )
+
+        orch = get_terminal_orchestrator()
+
+        # Resolve terminal reference
+        hint = (
+            _entity_value(intent, "terminal_id", "terminal", "name", "id")
+            or "last"
+        )
+        terminal_id = orch.find_terminal(hint)
+
+        if terminal_id is None:
+            all_t = orch.get_all_terminals()
+            if all_t:
+                for t in all_t:
+                    if t["state"] in ("COMPLETED", "FAILED"):
+                        terminal_id = t["id"]
+                        break
+                if terminal_id is None:
+                    terminal_id = all_t[0]["id"]
+
+        if terminal_id is None:
+            return ToolResult(
+                success=False,
+                error="No terminal to export",
+                tool_name="export_results",
+                execution_time_ms=(time.monotonic() - start) * 1000,
+                message="❌ No terminal results available for export.",
+            )
+
+        # Destination path
+        dest = _entity_value(intent, "path", "destination", "file")
+        if not dest:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            dest = os.path.join(cwd, f"terminal_result_{ts}.json")
+        else:
+            dest = os.path.join(cwd, dest) if not os.path.isabs(dest) else dest
+
+        parsed = orch.parse_terminal_result(terminal_id)
+        # Remove raw_output from export to keep file small
+        export_data = {k: v for k, v in parsed.items() if k != "raw_output"}
+        export_data["output_preview"] = parsed.get("raw_output", "")[:2000]
+
+        try:
+            dest_dir = os.path.dirname(dest)
+            if dest_dir:
+                os.makedirs(dest_dir, exist_ok=True)
+            with open(dest, "w", encoding="utf-8") as f:
+                json.dump(export_data, f, indent=2, default=str)
+
+            elapsed = (time.monotonic() - start) * 1000
+            return ToolResult(
+                success=True,
+                result={"path": dest, "terminal_id": terminal_id},
+                tool_name="export_results",
+                execution_time_ms=elapsed,
+                message=f"✅ Results exported to `{dest}`",
+            )
+        except Exception as exc:
+            return ToolResult(
+                success=False,
+                error=str(exc),
+                tool_name="export_results",
+                execution_time_ms=(time.monotonic() - start) * 1000,
+                message=f"❌ Export failed: {exc}",
+            )
 
     # ── Phase 8 helper: set LLM provider ──────────────────────────
 
