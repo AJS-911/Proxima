@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import re
-import threading
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -143,11 +142,6 @@ class ToolPermissionManager:
         self._extended_blocked_re = [
             re.compile(p, re.IGNORECASE) for p in EXTENDED_BLOCKED_COMMANDS
         ]
-
-        # Pending consent requests: request_id → threading.Event
-        self._pending: Dict[str, threading.Event] = {}
-        self._pending_results: Dict[str, bool] = {}
-        self._lock = threading.Lock()
 
     # ── Properties ────────────────────────────────────────────────────
 

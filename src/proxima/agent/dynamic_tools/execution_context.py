@@ -170,6 +170,12 @@ class ExecutionContext:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     parent_context_id: Optional[str] = None
+
+    # Agent integration — set by AgentLoop when executing tools
+    llm_router: Any = None            # LLMRouter instance (for sub-agents / analysis)
+    tool_registry: Any = None         # ToolRegistry instance (for tool look-ups)
+    session_manager: Any = None       # AgentSessionManager instance
+    dual_model_router: Any = None     # DualModelRouter instance
     
     def __post_init__(self):
         """Initialize environment variables from system."""

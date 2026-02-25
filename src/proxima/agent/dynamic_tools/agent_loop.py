@@ -1330,9 +1330,9 @@ class AgentLoop:
         if self._tool_permissions is not None and _TOOL_PERMISSIONS_AVAILABLE:
             session_id = ""
             if self._session_manager is not None:
-                session = getattr(self._session_manager, "_current_session", None)
+                session = self._session_manager.get_current_session()
                 if session is not None:
-                    session_id = getattr(session, "session_id", "")
+                    session_id = session.session_id
             action = arguments.get("command", tool_name)
             perm = self._tool_permissions.check_permission(
                 session_id, tool_name, str(action), arguments,
@@ -1353,6 +1353,33 @@ class AgentLoop:
                     return f"🚫 Operation cancelled by user: {tool_name}"
 
         cwd = self._current_cwd()
+
+        # Phase 16 — Inject runtime dependencies into tool instances that
+        # need them (e.g. AgenticFetchTool needs _llm_router and _tool_registry).
+        if self._tool_registry is not None:
+            tool_inst = self._tool_registry.get_tool_instance(tool_name)
+            if tool_inst is not None:
+                if self._llm_router is not None and not getattr(tool_inst, "_llm_router", None):
+                    tool_inst._llm_router = self._llm_router  # type: ignore[attr-defined]
+                if self._tool_registry is not None and not getattr(tool_inst, "_tool_registry", None):
+                    tool_inst._tool_registry = self._tool_registry  # type: ignore[attr-defined]
+                if self._dual_model_router is not None and not getattr(tool_inst, "_dual_model_router", None):
+                    tool_inst._dual_model_router = self._dual_model_router  # type: ignore[attr-defined]
+
+        # Phase 16 — Delegate research/search tasks to sub-agent
+        _SUB_AGENT_TOOLS = {"web_search", "agentic_fetch"}
+        if tool_name in _SUB_AGENT_TOOLS and _SUB_AGENT_AVAILABLE:
+            query = arguments.get("query") or arguments.get("url") or arguments.get("prompt", "")
+            if query:
+                self._ui_callback(f"🔍 Delegating '{tool_name}' to sub-agent...")
+                result_text = self._spawn_sub_agent(str(query), name=tool_name)
+                self._record_session_message(
+                    "tool",
+                    result_text,
+                    tool_calls=[{"name": tool_name, "arguments": arguments}],
+                    tool_results=[{"tool_name": tool_name, "output": result_text[:500]}],
+                )
+                return result_text
 
         # Check if tool_name maps to an IntentType → use bridge dispatch
         intent = self._build_intent_from_tool_call(tool_name, arguments)
@@ -1430,12 +1457,21 @@ class AgentLoop:
                 max_iterations=5,
                 timeout_seconds=60,
             )
-            sub = _SubAgent(
-                config=config,
-                llm_router=router,
-                tool_registry=self._tool_registry,
-                session_manager=self._session_manager,
-            )
+            # Phase 16 — use the injected sub_agent_factory if available
+            if self._sub_agent_factory is not None:
+                sub = self._sub_agent_factory(
+                    config=config,
+                    llm_router=router,
+                    tool_registry=self._tool_registry,
+                    session_manager=self._session_manager,
+                )
+            else:
+                sub = _SubAgent(
+                    config=config,
+                    llm_router=router,
+                    tool_registry=self._tool_registry,
+                    session_manager=self._session_manager,
+                )
             result = sub.run(prompt)
             return result or "(Sub-agent returned no result)"
         except Exception as exc:

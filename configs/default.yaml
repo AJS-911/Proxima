@@ -30,6 +30,10 @@ consent:
 # Phase 16 — Agent capabilities configuration
 agent:
   models:
+    # NOTE: large and small are identical placeholders.  Replace with
+    # different provider/model pairs to enable dual-model routing
+    # (e.g. use a fast small model for sub-agents and a strong large
+    # model for the main agentic loop).
     large:
       provider: "ollama"
       model: "llama2-uncensored"
@@ -41,15 +45,27 @@ agent:
       context_window: 4096
       max_tokens: 1024
   permissions:
+    # These entries must use *class names* (PascalCase) matching the
+    # tool_registry — they are checked by ToolPermissionManager alongside
+    # the snake_case aliases in DEFAULT_ALLOWED_TOOLS (tool_permissions.py).
     allowed_tools:
       - ReadFileTool
+      - read_file
       - ListDirectoryTool
+      - list_directory
       - SearchFilesTool
+      - search_files
       - FileInfoTool
+      - file_info
       - GetWorkingDirectoryTool
+      - get_working_directory
       - GitStatusTool
+      - git_status
       - GitLogTool
+      - git_log
       - GitDiffTool
+      - git_diff
+      - todos
     yolo_mode: false
   session:
     storage_dir: ".proxima/sessions"

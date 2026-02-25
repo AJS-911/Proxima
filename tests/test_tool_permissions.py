@@ -264,3 +264,73 @@ class TestDangerousCommandBlocking:
         mgr = _make_manager(config={"yolo_mode": True})
         result = mgr.check_permission("s1", "write_file", "write /tmp/foo")
         assert result == PermissionResult.ALLOWED
+
+    def test_yolo_mode_allows_run_command_non_blocked(self):
+        """YOLO mode auto-approves run_command when the command is not blocked."""
+        mgr = _make_manager(config={"yolo_mode": True})
+        result = mgr.check_permission(
+            "s1", "run_command", "npm install",
+            params={"command": "npm install"},
+        )
+        assert result == PermissionResult.ALLOWED
+
+    def test_yolo_mode_allows_non_safe_non_blocked_run_command(self):
+        """YOLO mode auto-approves even commands that are not in SAFE_READ_COMMANDS
+        as long as they are not blocked."""
+        mgr = _make_manager(config={"yolo_mode": True})
+        # "python -m pytest" is not in SAFE_READ_COMMANDS but not blocked either
+        result = mgr.check_permission(
+            "s1", "run_command", "python -m pytest",
+            params={"command": "python -m pytest"},
+        )
+        assert result == PermissionResult.ALLOWED
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Test 7: Safe read-only command approval (Step 6 of 7-step check)
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestSafeReadOnlyCommandApproval:
+    """Verify that commands in SAFE_READ_COMMANDS are auto-approved
+    independently — this is Step 6 of the 7-step permission check."""
+
+    @pytest.mark.parametrize("cmd", [
+        "ls -la /home",
+        "cat README.md",
+        "grep -r 'pattern' .",
+        "pwd",
+        "tree --dirsfirst",
+        "head -n 20 file.txt",
+    ])
+    def test_safe_read_commands_auto_approved(self, cmd: str):
+        """Safe read-only commands should return ALLOWED even without
+        being on the explicit tool allowlist."""
+        mgr = _make_manager()
+        result = mgr.check_permission(
+            "s1", "run_command", cmd,
+            params={"command": cmd},
+        )
+        assert result == PermissionResult.ALLOWED, f"'{cmd}' should be auto-approved as safe"
+
+    def test_non_safe_command_needs_consent(self):
+        """A command NOT in SAFE_READ_COMMANDS (and not blocked) needs consent."""
+        mgr = _make_manager()
+        result = mgr.check_permission(
+            "s1", "run_command", "npm install",
+            params={"command": "npm install"},
+        )
+        assert result == PermissionResult.NEEDS_CONSENT
+
+    @pytest.mark.parametrize("cmd", [
+        "Get-ChildItem -Recurse",
+        "Get-Content file.txt",
+        "Select-String pattern file.py",
+    ])
+    def test_powershell_safe_commands_auto_approved(self, cmd: str):
+        """PowerShell equivalents in SAFE_READ_COMMANDS should also be approved."""
+        mgr = _make_manager()
+        result = mgr.check_permission(
+            "s1", "run_command", cmd,
+            params={"command": cmd},
+        )
+        assert result == PermissionResult.ALLOWED

@@ -15,7 +15,6 @@ dependency.
 
 from __future__ import annotations
 
-import copy
 import logging
 from enum import Enum
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING

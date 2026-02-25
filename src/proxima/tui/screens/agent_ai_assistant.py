@@ -310,6 +310,68 @@ _RISK_EMOJI: Dict[str, str] = {
 }
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  Phase 16 — TodoPillWidget
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TodoPillWidget(Static):
+    """A small pill indicator showing todo progress (e.g. "To-Do 3/7").
+
+    Renders a compact badge in the chat area header showing how many
+    todos are completed out of the total.  When todos are in-progress
+    a small spinner character cycles to indicate activity.
+
+    Usage
+    -----
+    Call :meth:`update_counts` whenever the todos change, or call
+    :meth:`clear` to hide the widget.
+    """
+
+    DEFAULT_CSS = """
+    TodoPillWidget {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        color: #aabbcc;
+        background: #1e1e2e;
+        text-style: bold;
+        display: none;
+    }
+    TodoPillWidget.visible {
+        display: block;
+    }
+    """
+
+    _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__("", **kwargs)
+        self._completed = 0
+        self._total = 0
+        self._in_progress = False
+        self._spin_idx = 0
+
+    def update_counts(self, completed: int, total: int, in_progress: bool = False) -> None:
+        """Update the displayed counts and visibility."""
+        self._completed = completed
+        self._total = total
+        self._in_progress = in_progress
+        if total > 0:
+            self.add_class("visible")
+            spin = ""
+            if in_progress:
+                spin = f" {self._SPINNER_FRAMES[self._spin_idx % len(self._SPINNER_FRAMES)]}"
+                self._spin_idx += 1
+            self.update(f"📋 To-Do {completed}/{total}{spin}")
+        else:
+            self.clear()
+
+    def clear(self) -> None:
+        """Hide the pill."""
+        self.remove_class("visible")
+        self.update("")
+
+
 class AgentAIAssistantScreen(BaseScreen):
     """AI Assistant with full agent capabilities and Phase 2 UI enhancements.
     
@@ -1145,7 +1207,7 @@ class AgentAIAssistantScreen(BaseScreen):
                 _perm_config: dict = {}
                 try:
                     from proxima.config.settings import config_service
-                    _raw_cfg = config_service._build_merged_dict()
+                    _raw_cfg = config_service.get_raw_config()
                     _perm_config = _raw_cfg.get("agent", {}).get("permissions", {})
                 except Exception:
                     pass
@@ -1162,7 +1224,7 @@ class AgentAIAssistantScreen(BaseScreen):
                 _agent_cfg: dict = {}
                 try:
                     from proxima.config.settings import config_service
-                    _raw_cfg = config_service._build_merged_dict()
+                    _raw_cfg = config_service.get_raw_config()
                     _agent_cfg = _raw_cfg.get("agent", {})
                 except Exception:
                     pass
@@ -1473,6 +1535,9 @@ class AgentAIAssistantScreen(BaseScreen):
                         id="chat-log",
                         wrap=True,
                     )
+                
+                # Phase 16 — To-Do pill indicator
+                yield TodoPillWidget(id="todo-pill")
                 
                 # Thinking indicator
                 with Horizontal(classes="thinking-indicator", id="thinking-indicator"):
@@ -2302,6 +2367,10 @@ class AgentAIAssistantScreen(BaseScreen):
             self._update_stats_display()
             self._update_stats_panel()
             
+            # Phase 16 — update to-do pill if this was a todos tool call
+            if tool_name == "todos" and result.success:
+                self._update_todo_pill(result)
+            
             # Add to tools list using new ToolExecutionCard
             self._add_tool_to_list(tool_name, arguments, result)
         except Exception:
@@ -2344,6 +2413,54 @@ class AgentAIAssistantScreen(BaseScreen):
             text = Text()
             text.append("\n❌ Error: ", style=f"bold {theme.error}")
             text.append(error, style=theme.fg_muted, overflow="fold")
+
+    def _update_todo_pill(self, result: "ToolResult") -> None:
+        """Update the TodoPillWidget from a ``todos`` tool execution result.
+
+        Parses the result metadata to extract completed / total / in_progress
+        counts.  The ``todos`` tool returns the list in ``result.metadata``
+        under the ``"todos"`` key.
+        """
+        try:
+            pill = self.query_one("#todo-pill", TodoPillWidget)
+        except Exception:
+            return
+
+        # The todos tool puts the list under result.metadata["todos"]
+        todos: list = []
+        meta = getattr(result, "metadata", None) or {}
+        if isinstance(meta, dict) and "todos" in meta:
+            todos = meta["todos"]
+        else:
+            # Fallback: try result.result itself
+            raw = result.result
+            if isinstance(raw, dict):
+                todos = raw.get("todos") or raw.get("items") or []
+            elif isinstance(raw, list):
+                todos = raw
+            else:
+                try:
+                    import json
+                    parsed = json.loads(str(raw))
+                    todos = parsed if isinstance(parsed, list) else parsed.get("todos", [])
+                except Exception:
+                    pill.clear()
+                    return
+
+        if not todos:
+            pill.clear()
+            return
+
+        total = len(todos)
+        completed = sum(
+            1 for t in todos
+            if isinstance(t, dict) and t.get("status") == "completed"
+        )
+        in_progress = any(
+            isinstance(t, dict) and t.get("status") == "in_progress"
+            for t in todos
+        )
+        pill.update_counts(completed, total, in_progress=in_progress)
             text.append("\n", style=theme.fg_base)
             
             chat_log.write(text)
@@ -2362,6 +2479,7 @@ class AgentAIAssistantScreen(BaseScreen):
         Supported commands:
         - ``/new``              — start a new session
         - ``/sessions``         — list available sessions
+        - ``/switch <id>``      — switch to a session by ID prefix
         - ``/import <path>``    — import a session from an exported JSON
         - ``/summarize``        — explicitly summarize the current session
         - ``/delete``           — delete the current session
@@ -2376,6 +2494,9 @@ class AgentAIAssistantScreen(BaseScreen):
         elif command == "/sessions":
             self._slash_list_sessions()
 
+        elif command == "/switch":
+            self._slash_switch_session(arg)
+
         elif command == "/import":
             self._slash_import_session(arg)
 
@@ -2388,8 +2509,8 @@ class AgentAIAssistantScreen(BaseScreen):
         else:
             self._show_ai_message(
                 f"Unknown command: `{command}`\n"
-                "Available commands: `/new`, `/sessions`, `/import <path>`, "
-                "`/summarize`, `/delete`"
+                "Available commands: `/new`, `/sessions`, `/switch <id>`, "
+                "`/import <path>`, `/summarize`, `/delete`"
             )
 
     def _slash_list_sessions(self) -> None:
@@ -2429,8 +2550,8 @@ class AgentAIAssistantScreen(BaseScreen):
             )
 
         lines.append(
-            "\nTo switch, copy a session ID and type it in chat "
-            "(session switching via selection will be added in a future update)."
+            "\nUse `/switch <id-prefix>` to switch to a session "
+            "(e.g. `/switch a1b2c3d4`)."
         )
         self._show_ai_message("\n".join(lines))
 
@@ -2533,6 +2654,65 @@ class AgentAIAssistantScreen(BaseScreen):
             )
         except Exception as exc:
             self._show_ai_message(f"❌ Delete failed: {exc}")
+
+    def _slash_switch_session(self, session_id_prefix: str) -> None:
+        """Handle ``/switch <id>`` — switch to a session by ID prefix.
+
+        The *session_id_prefix* is matched against the first 8+ chars of
+        each session ID.  If exactly one match is found the session is
+        loaded; otherwise an error message is shown.
+        """
+        if self._agent_session_manager is None:
+            self._show_ai_message("⚠️ Session manager not available.")
+            return
+
+        if not session_id_prefix:
+            self._show_ai_message(
+                "Usage: `/switch <session-id-prefix>`\n"
+                "Use `/sessions` to see available IDs."
+            )
+            return
+
+        # Find matching sessions
+        sessions = self._agent_session_manager.list_sessions()
+        matches = [
+            s for s in sessions
+            if s.get("session_id", "").startswith(session_id_prefix)
+        ]
+
+        if len(matches) == 0:
+            self._show_ai_message(
+                f"No session found matching `{session_id_prefix}`.\n"
+                "Use `/sessions` to list available sessions."
+            )
+            return
+
+        if len(matches) > 1:
+            ids = ", ".join(
+                f"`{m.get('session_id', '?')[:8]}`" for m in matches[:5]
+            )
+            self._show_ai_message(
+                f"Ambiguous prefix `{session_id_prefix}` — matches: {ids}\n"
+                "Please provide a longer prefix."
+            )
+            return
+
+        target_id = matches[0].get("session_id", "")
+        target_title = matches[0].get("title", "Untitled")
+        try:
+            self._agent_session_manager.switch_session(target_id)
+
+            # Reset the agent loop conversation and reload from session
+            if self._agent_loop is not None:
+                self._agent_loop.reset_conversation()
+            self._clear_chat()
+
+            self.notify(f"Switched to: {target_title}", severity="information")
+            self._show_ai_message(
+                f"✅ Switched to session **{target_title}** `[{target_id[:8]}]`"
+            )
+        except Exception as exc:
+            self._show_ai_message(f"❌ Switch failed: {exc}")
 
     def _load_startup_session(self) -> None:
         """Load the most recent session on app startup (Phase 15, Step 15.3).

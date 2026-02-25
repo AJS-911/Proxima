@@ -193,6 +193,26 @@ class ConfigService:
         parts = self._normalize_key_path(key_path)
         return _get_nested(data, parts)
 
+    def get_raw_config(
+        self, cli_overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return the fully-merged config dict *before* Pydantic validation.
+
+        This is useful for sections like ``agent`` that live in the YAML
+        files but are not (yet) modelled in :class:`Settings`.
+        """
+        data: dict[str, Any] = dict(DEFAULT_CONFIG)
+        for path in [
+            self.default_config_path,
+            self.project_config_path,
+            self.user_config_path,
+        ]:
+            data = _deep_merge(data, _load_yaml(path))
+        data = _deep_merge(data, self._env_overrides())
+        if cli_overrides:
+            data = _deep_merge(data, cli_overrides)
+        return data
+
     def reset(self, scope: Literal["user", "project"] = "user") -> None:
         target = self.user_config_path if scope == "user" else self.project_config_path
         if target.exists():

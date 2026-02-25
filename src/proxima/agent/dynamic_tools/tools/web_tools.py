@@ -354,11 +354,14 @@ class AgenticFetchTool(BaseTool):
                 timeout_seconds=60,
             )
 
-            # Try to get the LLM router from context or globals
-            llm_router = None
-            tool_registry = None
-            if context is not None:
+            # Try to get the LLM router from:
+            # 1. Injected attribute on the tool instance (set by AgentLoop)
+            # 2. ExecutionContext attrs (fallback)
+            llm_router = getattr(self, "_llm_router", None)
+            tool_registry = getattr(self, "_tool_registry", None)
+            if llm_router is None and context is not None:
                 llm_router = getattr(context, "llm_router", None)
+            if tool_registry is None and context is not None:
                 tool_registry = getattr(context, "tool_registry", None)
 
             if llm_router is not None:

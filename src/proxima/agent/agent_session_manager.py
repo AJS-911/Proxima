@@ -29,6 +29,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+try:
+    import msvcrt  # Windows file locking
+    _HAS_MSVCRT = True
+except ImportError:
+    _HAS_MSVCRT = False
+
+try:
+    import fcntl  # Unix file locking
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -319,8 +331,17 @@ class AgentSessionManager:
     # Auto-save after this many messages are added
     _AUTO_SAVE_INTERVAL: int = 5
 
-    def __init__(self, storage_dir: str = ".proxima/sessions") -> None:
-        self._storage_dir = Path(storage_dir)
+    def __init__(
+        self,
+        storage_dir: str = ".proxima/sessions",
+        *,
+        workspace_dir: Optional[str] = None,
+    ) -> None:
+        if workspace_dir is not None:
+            # Per-workspace session isolation
+            self._storage_dir = Path(workspace_dir) / ".proxima" / "sessions"
+        else:
+            self._storage_dir = Path(storage_dir)
         self._storage_dir.mkdir(parents=True, exist_ok=True)
 
         self._sessions: Dict[str, SessionState] = {}
@@ -328,6 +349,10 @@ class AgentSessionManager:
 
         # Counter to track messages since last save
         self._unsaved_message_count: int = 0
+
+        # Lightweight session-listing cache: maps session_id -> metadata dict
+        self._listing_cache: Dict[str, Dict[str, Any]] = {}
+        self._listing_cache_mtime: float = 0.0
 
     # ── Properties ────────────────────────────────────────────────────
 
@@ -434,21 +459,49 @@ class AgentSessionManager:
         """List all sessions with lightweight metadata (no full messages).
 
         Returns a list sorted by ``updated_at`` descending (most recent first).
+        Uses a lightweight cache keyed on file modification times to avoid
+        re-reading every JSON file on each call.
         """
-        sessions: List[Dict[str, Any]] = []
+        # Build a quick mtime map for all session files
+        current_files: Dict[str, float] = {}
         for path in self._storage_dir.glob("*.json"):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                sessions.append({
-                    "session_id": data.get("session_id", path.stem),
-                    "title": data.get("title", "Untitled"),
-                    "created_at": data.get("created_at", 0),
-                    "updated_at": data.get("updated_at", 0),
-                    "message_count": data.get("message_count", 0),
-                    "is_sub_agent_session": data.get("is_sub_agent_session", False),
-                })
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Skipping corrupt session file %s: %s", path.name, exc)
+                current_files[path.stem] = path.stat().st_mtime
+            except OSError:
+                pass
+
+        # Determine if cache is still valid
+        cache_valid = (
+            set(current_files.keys()) == set(self._listing_cache.keys())
+            and all(
+                current_files.get(sid, 0) <= self._listing_cache.get(sid, {}).get("_mtime", 0)
+                for sid in current_files
+            )
+        )
+
+        if not cache_valid:
+            # Rebuild cache
+            self._listing_cache.clear()
+            for path in self._storage_dir.glob("*.json"):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    entry = {
+                        "session_id": data.get("session_id", path.stem),
+                        "title": data.get("title", "Untitled"),
+                        "created_at": data.get("created_at", 0),
+                        "updated_at": data.get("updated_at", 0),
+                        "message_count": data.get("message_count", 0),
+                        "is_sub_agent_session": data.get("is_sub_agent_session", False),
+                        "_mtime": current_files.get(path.stem, 0),
+                    }
+                    self._listing_cache[entry["session_id"]] = entry
+                except (json.JSONDecodeError, OSError) as exc:
+                    logger.warning("Skipping corrupt session file %s: %s", path.name, exc)
+
+        sessions = [
+            {k: v for k, v in entry.items() if k != "_mtime"}
+            for entry in self._listing_cache.values()
+        ]
         sessions.sort(key=lambda s: s["updated_at"], reverse=True)
         return sessions
 
@@ -572,6 +625,7 @@ class AgentSessionManager:
 
         # Step 15.5: auto-generate title on first user message
         was_empty = session.message_count == 0
+        has_default_title = session.title in ("Untitled Session", "")
 
         session.messages.append(message)
         session.message_count = len(session.messages)
@@ -582,8 +636,8 @@ class AgentSessionManager:
             self._save_session(session.session_id)
             self._unsaved_message_count = 0
 
-        # Auto-generate title when first user message arrives
-        if was_empty and message.role == "user" and message.content.strip():
+        # Auto-generate title only when the session has no explicit title
+        if was_empty and has_default_title and message.role == "user" and message.content.strip():
             self.generate_title(llm_router, session.session_id)
 
     def get_current_session(self) -> Optional[SessionState]:
@@ -596,7 +650,7 @@ class AgentSessionManager:
     #  Step 15.2 — Auto-Summarization
     # ══════════════════════════════════════════════════════════════════
 
-    def should_summarize(self, model_context_window: int) -> bool:
+    def should_summarize(self, model_context_window: int = 0) -> bool:
         """Return ``True`` if the current conversation should be summarized.
 
         The decision is based on the estimated token count of messages that
@@ -606,8 +660,11 @@ class AgentSessionManager:
         Parameters
         ----------
         model_context_window : int
-            The context window size of the model in tokens.
+            The context window size of the model in tokens.  If zero or
+            negative, falls back to ``DEFAULT_CONTEXT_WINDOW``.
         """
+        if model_context_window <= 0:
+            model_context_window = DEFAULT_CONTEXT_WINDOW
         session = self.get_current_session()
         if session is None:
             return False
@@ -727,9 +784,12 @@ class AgentSessionManager:
         session.summary_message_id = summary_msg.message_id
         session.message_count = len(session.messages)
 
-        # Reset token counters — summary replaces all prior context
-        session.prompt_tokens = 0
-        session.completion_tokens = len(summary_text) // 4
+        # Accumulate token counters — preserve lifetime totals across
+        # summarizations so we don't lose historical usage data.
+        session.prompt_tokens += sum(
+            len(m.content) // 4 for m in msgs_to_summarize if m.role == "user"
+        )
+        session.completion_tokens += len(summary_text) // 4
 
         self._save_session(session.session_id)
         logger.info(
@@ -989,7 +1049,8 @@ class AgentSessionManager:
         """Atomically persist a session to JSON on disk.
 
         Writes to a ``.tmp`` file first, then renames to prevent corruption
-        from interrupted writes.
+        from interrupted writes.  Uses platform-appropriate file locking to
+        guard against concurrent access from multiple processes.
         """
         session = self._sessions.get(session_id)
         if session is None:
@@ -1000,12 +1061,21 @@ class AgentSessionManager:
         final_path = self._session_path(session_id)
 
         try:
-            tmp_path.write_text(
-                json.dumps(data, indent=2, default=str),
-                encoding="utf-8",
-            )
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                # Acquire an exclusive file lock (platform-specific)
+                self._lock_file(fh)
+                try:
+                    fh.write(json.dumps(data, indent=2, default=str))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                finally:
+                    self._unlock_file(fh)
+
             # Atomic rename (same filesystem)
             tmp_path.replace(final_path)
+
+            # Invalidate listing cache for this session
+            self._listing_cache.pop(session_id, None)
         except OSError as exc:
             logger.error("Failed to save session %s: %s", session_id[:8], exc)
             # Clean up tmp file if rename failed
@@ -1014,6 +1084,29 @@ class AgentSessionManager:
                     tmp_path.unlink()
                 except OSError:
                     pass
+
+    @staticmethod
+    def _lock_file(fh: Any) -> None:
+        """Acquire an exclusive file lock (best-effort, platform-specific)."""
+        try:
+            if _HAS_MSVCRT:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            elif _HAS_FCNTL:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, IOError):
+            pass  # Lock not acquired — proceed anyway (single-user is safe)
+
+    @staticmethod
+    def _unlock_file(fh: Any) -> None:
+        """Release the file lock (best-effort)."""
+        try:
+            if _HAS_MSVCRT:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            elif _HAS_FCNTL:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except (OSError, IOError):
+            pass
 
     def _extract_context_from_messages(
         self,

@@ -126,11 +126,13 @@ class SubAgent:
         llm_router: Optional["LLMRouter"] = None,
         tool_registry: Optional["ToolRegistry"] = None,
         session_manager: Any = None,
+        tool_permissions: Any = None,
     ) -> None:
         self._config = config
         self._llm_router = llm_router
         self._tool_registry = tool_registry
         self._session_manager = session_manager
+        self._tool_permissions = tool_permissions
 
         # Filtered tool set: only expose allowed tools
         self._allowed_set = frozenset(config.allowed_tools)
@@ -265,9 +267,14 @@ class SubAgent:
             except (json.JSONDecodeError, KeyError):
                 pass
 
-        # Pattern 2: bare inline JSON
+        # Pattern 2: bare inline JSON — use a greedy approach that handles
+        # one level of nested braces (e.g. {"tool": "x", "arguments": {"k": "v"}})
         if not calls:
-            for match in re.finditer(r'(\{"tool"\s*:.*?\})', text, re.DOTALL):
+            for match in re.finditer(
+                r'(\{"tool"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}\s*\})',
+                text,
+                re.DOTALL,
+            ):
                 try:
                     data = json.loads(match.group(1))
                     if "tool" in data:
@@ -281,6 +288,8 @@ class SubAgent:
         """Execute a tool if it's in the allowed set.
 
         For ``run_command``, enforces the safe-read-commands restriction.
+        Respects ``auto_approve_permissions`` — when ``True`` (default for
+        sub-agents) all permission checks are skipped automatically.
         """
         # Check if tool is allowed
         if tool_name not in self._allowed_set:
@@ -295,6 +304,26 @@ class SubAgent:
                     f"⚠️ Command '{base_cmd}' is not in the sub-agent safe "
                     f"command list. Sub-agents can only use read-only commands."
                 )
+
+        # Phase 16 — Permission check (skip when auto_approve_permissions=True)
+        if (
+            self._tool_permissions is not None
+            and not self._config.auto_approve_permissions
+        ):
+            try:
+                action = arguments.get("command", tool_name)
+                perm = self._tool_permissions.check_permission(
+                    self._session_id or "", tool_name, str(action), arguments,
+                )
+                # Import lazily to avoid circular deps
+                from proxima.agent.tool_permissions import PermissionResult
+                if perm == PermissionResult.DENIED:
+                    reason = self._tool_permissions.get_blocked_reason(str(action))
+                    return f"🚫 Blocked: {reason or 'Denied by permission rules.'}"
+                if perm == PermissionResult.NEEDS_CONSENT:
+                    return f"🚫 Sub-agent cannot prompt for consent — operation skipped: {tool_name}"
+            except Exception:
+                pass  # If permission check fails, proceed with execution
 
         # Look up the tool in the registry
         if self._tool_registry is None:

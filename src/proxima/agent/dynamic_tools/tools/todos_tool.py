@@ -218,7 +218,7 @@ class TodosTool(BaseTool):
         if session_manager is not None:
             try:
                 # Clear existing todos and re-add
-                session = getattr(session_manager, "_current_session", None)
+                session = session_manager.get_current_session()
                 if session is not None:
                     session.todos.clear()
                     for item in items:

@@ -542,3 +542,210 @@ class TestLoadMostRecent:
         assert loaded is not None
         assert loaded.title == "Newer"
         assert mgr.current_session_id == loaded.session_id
+
+
+# ── 8. Corrupt JSON Import ────────────────────────────────────────
+
+class TestCorruptJsonImport:
+    """Verify import_session handles corrupted JSON gracefully."""
+
+    def test_corrupt_json_raises_value_error(self, mgr: AgentSessionManager, tmp_path: Path) -> None:
+        bad_file = tmp_path / "corrupt.json"
+        bad_file.write_text("{this is not valid json!", encoding="utf-8")
+        with pytest.raises((ValueError, json.JSONDecodeError)):
+            mgr.import_session(str(bad_file))
+
+    def test_empty_file_raises(self, mgr: AgentSessionManager, tmp_path: Path) -> None:
+        empty_file = tmp_path / "empty.json"
+        empty_file.write_text("", encoding="utf-8")
+        with pytest.raises((ValueError, json.JSONDecodeError)):
+            mgr.import_session(str(empty_file))
+
+    def test_missing_file_raises(self, mgr: AgentSessionManager) -> None:
+        with pytest.raises((FileNotFoundError, OSError)):
+            mgr.import_session("/nonexistent/path/no_file.json")
+
+
+# ── 9. Context Extraction Accuracy ───────────────────────────────
+
+class TestContextExtractionAccuracy:
+    """Verify context extraction captures URLs, packages, branches, and paths."""
+
+    def test_url_extraction(self, mgr: AgentSessionManager, tmp_path: Path) -> None:
+        export_data = {
+            "id": "url_ctx",
+            "name": "With URLs",
+            "messages": [
+                {"role": "user", "content": "Fetch https://example.com/api and https://github.com/org/repo"},
+                {"role": "assistant", "content": "Fetched both URLs."},
+            ],
+        }
+        export_file = tmp_path / "urls.json"
+        export_file.write_text(json.dumps(export_data), encoding="utf-8")
+
+        session = mgr.import_session(str(export_file))
+        ctx = session.context
+        assert isinstance(ctx, dict)
+        urls = ctx.get("last_mentioned_urls", [])
+        assert isinstance(urls, list)
+        assert len(urls) >= 2, f"Expected at least 2 URLs extracted, got {urls}"
+        assert any("example.com" in u for u in urls)
+        assert any("github.com" in u for u in urls)
+
+    def test_package_extraction(self, mgr: AgentSessionManager, tmp_path: Path) -> None:
+        export_data = {
+            "id": "pkg_ctx",
+            "name": "With Packages",
+            "messages": [
+                {"role": "assistant", "content": "pip install numpy pandas scikit-learn"},
+            ],
+        }
+        export_file = tmp_path / "pkgs.json"
+        export_file.write_text(json.dumps(export_data), encoding="utf-8")
+
+        session = mgr.import_session(str(export_file))
+        ctx = session.context
+        assert isinstance(ctx, dict)
+        packages = ctx.get("installed_packages", [])
+        assert isinstance(packages, list)
+        assert "numpy" in packages, f"Expected 'numpy' in packages, got {packages}"
+        assert "pandas" in packages, f"Expected 'pandas' in packages, got {packages}"
+
+    def test_branch_extraction(self, mgr: AgentSessionManager, tmp_path: Path) -> None:
+        export_data = {
+            "id": "branch_ctx",
+            "name": "With Branches",
+            "messages": [
+                {"role": "user", "content": "checkout to feature/quantum-sim"},
+                {"role": "assistant", "content": "Switched to branch feature/quantum-sim."},
+            ],
+        }
+        export_file = tmp_path / "branches.json"
+        export_file.write_text(json.dumps(export_data), encoding="utf-8")
+
+        session = mgr.import_session(str(export_file))
+        ctx = session.context
+        assert isinstance(ctx, dict)
+        branches = ctx.get("last_mentioned_branches", [])
+        assert isinstance(branches, list)
+        assert any("feature/quantum-sim" in b for b in branches), (
+            f"Expected 'feature/quantum-sim' in branches, got {branches}"
+        )
+
+
+class TestExtractContextFromMessagesUnit:
+    """Direct unit tests for AgentSessionManager._extract_context_from_messages.
+
+    These bypass the import pathway and test the extraction method directly
+    against known input messages.
+    """
+
+    def test_extracts_urls(self, mgr: AgentSessionManager) -> None:
+        msgs = [
+            SessionMessage(role="user", content="Look at https://pypi.org/project/proxima/"),
+            SessionMessage(role="assistant", content="Also see http://localhost:8080/docs"),
+        ]
+        ctx = mgr._extract_context_from_messages(msgs)
+        urls = ctx.get("last_mentioned_urls", [])
+        assert "https://pypi.org/project/proxima/" in urls
+        assert "http://localhost:8080/docs" in urls
+
+    def test_extracts_packages(self, mgr: AgentSessionManager) -> None:
+        msgs = [
+            SessionMessage(role="user", content="pip install requests flask>=2.0"),
+        ]
+        ctx = mgr._extract_context_from_messages(msgs)
+        packages = ctx.get("installed_packages", [])
+        assert "requests" in packages
+        assert "flask" in packages
+
+    def test_extracts_branches(self, mgr: AgentSessionManager) -> None:
+        msgs = [
+            SessionMessage(role="user", content="switch to develop"),
+        ]
+        ctx = mgr._extract_context_from_messages(msgs)
+        branches = ctx.get("last_mentioned_branches", [])
+        assert "develop" in branches
+
+    def test_empty_messages_returns_valid_dict(self, mgr: AgentSessionManager) -> None:
+        ctx = mgr._extract_context_from_messages([])
+        assert isinstance(ctx, dict)
+
+    def test_no_matches_still_valid(self, mgr: AgentSessionManager) -> None:
+        msgs = [
+            SessionMessage(role="user", content="Hello, how are you?"),
+        ]
+        ctx = mgr._extract_context_from_messages(msgs)
+        assert isinstance(ctx, dict)
+        assert ctx.get("last_mentioned_urls", []) == []
+
+    def test_deduplication(self, mgr: AgentSessionManager) -> None:
+        """Same URL mentioned twice should only appear once."""
+        msgs = [
+            SessionMessage(role="user", content="See https://example.com"),
+            SessionMessage(role="assistant", content="Visiting https://example.com"),
+        ]
+        ctx = mgr._extract_context_from_messages(msgs)
+        urls = ctx.get("last_mentioned_urls", [])
+        assert urls.count("https://example.com") == 1
+
+
+# ── 10. SessionContext Bridge Round-Trip ──────────────────────────
+
+class TestSessionContextBridge:
+    """Verify SessionState can be serialized, deserialized, and used
+    to restore an AgentSessionManager session accurately."""
+
+    def test_full_round_trip_with_tools_and_todos(self, mgr: AgentSessionManager) -> None:
+        session = mgr.create_session(title="Bridge Test")
+        sid = session.session_id
+
+        # Add messages including tool results
+        mgr.add_message(SessionMessage(role="user", content="Run ls"))
+        mgr.add_message(SessionMessage(
+            role="tool",
+            content="ls output",
+            tool_calls=[{"name": "ls", "arguments": {}}],
+            tool_results=[{"tool_name": "ls", "output": "file1\nfile2"}],
+        ))
+        mgr.add_message(SessionMessage(role="assistant", content="Here are your files."))
+
+        # Add todos
+        mgr.add_todo("Task A")
+        mgr.add_todo("Task B")
+        mgr.update_todo_status(0, "completed")
+
+        # Save → Load
+        mgr._save_session(sid)
+        del mgr._sessions[sid]
+        loaded = mgr.load_session(sid)
+
+        assert loaded.title == "Bridge Test"
+        assert loaded.message_count == 3
+        assert loaded.messages[1].tool_results[0]["tool_name"] == "ls"
+        assert len(loaded.todos) == 2
+        assert loaded.todos[0].status == "completed"
+        assert loaded.todos[1].status == "pending"
+
+    def test_session_state_to_dict_and_back(self) -> None:
+        state = SessionState(
+            title="Dict Bridge",
+            message_count=2,
+            prompt_tokens=50,
+            completion_tokens=30,
+            todos=[TodoItem(content="Do it", status="in_progress")],
+            messages=[
+                SessionMessage(role="user", content="q1"),
+                SessionMessage(role="assistant", content="a1", model="test/model"),
+            ],
+        )
+        data = state.to_dict()
+        assert isinstance(data, dict)
+
+        restored = SessionState.from_dict(data)
+        assert restored.title == "Dict Bridge"
+        assert restored.prompt_tokens == 50
+        assert restored.completion_tokens == 30
+        assert len(restored.todos) == 1
+        assert restored.todos[0].status == "in_progress"
+        assert restored.messages[1].model == "test/model"
