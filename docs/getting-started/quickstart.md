@@ -1,4 +1,4 @@
-﻿# Quickstart Guide
+# Quickstart Guide
 
 Welcome to Proxima! This guide will help you get up and running with quantum circuit simulation in minutes.
 
@@ -279,4 +279,4 @@ proxima config reset
 proxima config validate
 ```
 
-For more help, see our [Troubleshooting Guide](advanced-topics.md#troubleshooting) or [open an issue](https://github.com/proxima-project/proxima/issues).
+For more help, see our [Troubleshooting Guide](advanced-topics.md#troubleshooting) or [open an issue](https://github.com/AJS-911/Proxima/issues).

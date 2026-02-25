@@ -1,4 +1,4 @@
-﻿# Packaging Guide
+# Packaging Guide
 
 This guide covers building, packaging, and distributing Proxima for various platforms.
 
@@ -247,10 +247,10 @@ CMD ["--help"]
 docker build -t proxima:latest .
 
 # Tag for registry
-docker tag proxima:latest ghcr.io/proxima-project/proxima:latest
+docker tag proxima:latest ghcr.io/ajs-911/proxima:latest
 
 # Push to registry
-docker push ghcr.io/proxima-project/proxima:latest
+docker push ghcr.io/ajs-911/proxima:latest
 ```
 
 ### Multi-Architecture Build
@@ -262,7 +262,7 @@ docker buildx create --use
 # Build for multiple architectures
 docker buildx build \
     --platform linux/amd64,linux/arm64 \
-    -t ghcr.io/proxima-project/proxima:latest \
+    -t ghcr.io/ajs-911/proxima:latest \
     --push .
 ```
 
@@ -318,7 +318,7 @@ test:
     - proxima --help
 
 about:
-  home: https://github.com/proxima-project/proxima
+  home: https://github.com/AJS-911/Proxima
   license: MIT
   summary: Intelligent Quantum Simulation Orchestration Framework
 ```
@@ -395,7 +395,7 @@ git push origin v0.1.0
 twine upload dist/*
 
 # Docker
-docker buildx build --push -t ghcr.io/proxima-project/proxima:0.1.0 .
+docker buildx build --push -t ghcr.io/ajs-911/proxima:0.1.0 .
 ```
 
 ## CI/CD Integration

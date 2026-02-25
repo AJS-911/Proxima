@@ -23,7 +23,7 @@ Proxima includes several quantum computing packages (like `qiskit-aer`) that con
 
 ```powershell
 # Navigate to Proxima directory
-cd C:\path\to\Pseudo-Proxima
+cd C:\path\to\Proxima
 
 # Run the Windows installation script
 .\scripts\install-windows.ps1

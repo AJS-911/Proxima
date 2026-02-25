@@ -1,4 +1,4 @@
-﻿# Contributing to Proxima
+# Contributing to Proxima
 
 Thank you for your interest in contributing to Proxima! This guide will help you get started with development and understand our contribution process.
 
@@ -14,7 +14,7 @@ Thank you for your interest in contributing to Proxima! This guide will help you
 ### Setting Up Your Development Environment
 
 1. **Fork the Repository:**
-   - Navigate to [github.com/proxima-project/proxima](https://github.com/proxima-project/proxima)
+   - Navigate to [github.com/AJS-911/Proxima](https://github.com/AJS-911/Proxima)
    - Click "Fork" in the top right corner
 
 2. **Clone Your Fork:**

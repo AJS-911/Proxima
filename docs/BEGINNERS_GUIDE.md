@@ -640,8 +640,8 @@ proxima backends --help
 ### Online Resources
 
 - **Documentation**: https://proxima-project.github.io/proxima/
-- **GitHub Issues**: https://github.com/prthmmkhija1/Pseudo-Proxima/issues
-- **Discussions**: https://github.com/prthmmkhija1/Pseudo-Proxima/discussions
+- **GitHub Issues**: https://github.com/AJS-911/Proxima/issues
+- **Discussions**: https://github.com/AJS-911/Proxima/discussions
 
 ### Community
 

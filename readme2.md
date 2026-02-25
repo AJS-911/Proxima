@@ -3,8 +3,8 @@
 [![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://img.shields.io/pypi/v/proxima-agent.svg)](https://pypi.org/project/proxima-agent/)
-[![Docker Image](https://img.shields.io/docker/v/proxima-project/proxima-agent?label=docker)](https://ghcr.io/proxima-project/proxima)
-[![CI](https://github.com/proxima-project/proxima/actions/workflows/ci.yml/badge.svg)](https://github.com/proxima-project/proxima/actions/workflows/ci.yml)
+[![Docker Image](https://img.shields.io/docker/v/AJS-911/Proxima-agent?label=docker)](https://ghcr.io/AJS-911/Proxima)
+[![CI](https://github.com/AJS-911/Proxima/actions/workflows/ci.yml/badge.svg)](https://github.com/AJS-911/Proxima/actions/workflows/ci.yml)
 
 Proxima is an intelligent quantum simulation orchestration framework that provides a unified interface for running quantum simulations across multiple backends with advanced features like automatic backend selection, resource monitoring, and intelligent result interpretation.
 
@@ -41,15 +41,15 @@ pip install proxima-agent[dev]    # Development tools
 
 ```bash
 # Pull the latest image
-docker pull ghcr.io/proxima-project/proxima:latest
+docker pull ghcr.io/AJS-911/Proxima:latest
 
 # Run with Docker
-docker run --rm -it ghcr.io/proxima-project/proxima:latest --help
+docker run --rm -it ghcr.io/AJS-911/Proxima:latest --help
 
 # Run a simulation
 docker run --rm -it \
   -v ~/.proxima:/home/proxima/.proxima \
-  ghcr.io/proxima-project/proxima:latest \
+  ghcr.io/AJS-911/Proxima:latest \
   run --backend cirq "bell state"
 
 # Using Docker Compose
@@ -61,7 +61,7 @@ docker-compose run proxima backends list
 
 ```bash
 # Add the tap
-brew tap proxima-project/proxima
+brew tap AJS-911/Proxima
 
 # Install
 brew install proxima
@@ -74,7 +74,7 @@ proxima version
 
 ```bash
 # Clone the repository
-git clone https://github.com/proxima-project/proxima.git
+git clone https://github.com/AJS-911/Proxima.git
 cd proxima
 
 # Install in development mode
@@ -86,7 +86,7 @@ python scripts/build.py build
 
 ### Standalone Binaries
 
-Download pre-built binaries from the [Releases](https://github.com/proxima-project/proxima/releases) page:
+Download pre-built binaries from the [Releases](https://github.com/AJS-911/Proxima/releases) page:
 
 - **Linux**: `proxima-linux-x86_64`
 - **macOS Intel**: `proxima-darwin-x86_64`
@@ -295,8 +295,8 @@ Proxima is an independent implementation, not a fork or derivative.
 
 ```bash
 # Download the code
-git clone https://github.com/prthmmkhija1/Pseudo-Proxima.git
-cd Pseudo-Proxima
+git clone https://github.com/AJS-911/Proxima.git
+cd Proxima
 
 # Install in development mode  
 pip install -e ".[all]"
@@ -919,7 +919,7 @@ proxima ui              # Visual guides
 - Local: Run `mkdocs serve` → http://localhost:8000
 
 **Community:**
-- [GitHub Issues](https://github.com/prthmmkhija1/Pseudo-Proxima/issues)
+- [GitHub Issues](https://github.com/AJS-911/Proxima/issues)
 - Examples: `examples/` directory
 - Discussions: GitHub Discussions
 

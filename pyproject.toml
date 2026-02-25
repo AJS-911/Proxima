@@ -154,11 +154,11 @@ full = [
 proxima = "proxima.cli.main:app"
 
 [project.urls]
-Homepage = "https://github.com/proxima-project/proxima"
-Documentation = "https://proxima.readthedocs.io"
-Repository = "https://github.com/proxima-project/proxima"
-Issues = "https://github.com/proxima-project/proxima/issues"
-Changelog = "https://github.com/proxima-project/proxima/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/AJS-911/Proxima"
+Documentation = "https://github.com/AJS-911/Proxima#readme"
+Repository = "https://github.com/AJS-911/Proxima"
+Issues = "https://github.com/AJS-911/Proxima/issues"
+Changelog = "https://github.com/AJS-911/Proxima/blob/main/CHANGELOG.md"
 
 [project.entry-points."proxima.backends"]
 cirq = "proxima.backends.cirq_adapter:CirqBackendAdapter"

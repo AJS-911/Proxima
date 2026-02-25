@@ -7,7 +7,7 @@ This beginner-friendly guide explains how to add and verify AI model integration
 ### Step 1: Launch Proxima TUI
 
 ```bash
-cd C:\Users\dell\Pictures\intern\ProximA\Pseudo-Proxima
+cd C:\Users\dell\Pictures\intern\ProximA\Proxima
 python run_tui.py
 ```
 

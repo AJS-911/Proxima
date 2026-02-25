@@ -38,7 +38,7 @@ twine upload dist/*
 Containerized distribution via GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/proxima-project/proxima:latest
+docker pull ghcr.io/ajs-911/proxima:latest
 ```
 
 **Files involved:**
@@ -67,7 +67,7 @@ docker-compose build proxima
 
 1. Create repo: `github.com/proxima-project/homebrew-proxima`
 2. Add formula to `Formula/proxima.rb`
-3. Users install with: `brew tap proxima-project/proxima && brew install proxima`
+3. Users install with: `# brew tap ajs-911/proxima  # (coming soon) && brew install proxima`
 
 **Update formula after release:**
 

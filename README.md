@@ -14,7 +14,7 @@
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python Version"/></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/></a>
   <a href="https://pypi.org/project/proxima-agent/"><img src="https://img.shields.io/pypi/v/proxima-agent.svg" alt="PyPI version"/></a>
-  <a href="https://github.com/prthmmkhija1/Pseudo-Proxima/actions"><img src="https://img.shields.io/github/actions/workflow/status/prthmmkhija1/Pseudo-Proxima/ci.yml?label=CI" alt="CI"/></a>
+  <a href="https://github.com/AJS-911/Proxima/actions"><img src="https://img.shields.io/github/actions/workflow/status/AJS-911/Proxima/ci.yml?label=CI" alt="CI"/></a>
 </p>
 
 <p align="center">
@@ -97,16 +97,18 @@ pip install proxima-agent[dev]    # Development tools
 
 ### Docker
 
+> **Note:** Docker image is not yet published. Please install from source below.
+
 ```bash
-docker pull ghcr.io/proxima-project/proxima:latest
-docker run --rm -it ghcr.io/proxima-project/proxima:latest run "bell state"
+# Docker support coming soon
+# docker pull ghcr.io/ajs-911/proxima:latest
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/prthmmkhija1/Pseudo-Proxima.git
-cd Pseudo-Proxima
+git clone https://github.com/AJS-911/Proxima.git
+cd Proxima
 pip install -e ".[all]"
 ```
 
@@ -116,8 +118,8 @@ For Windows users, especially with Visual Studio 2022 or newer:
 
 ```powershell
 # Clone the repository
-git clone https://github.com/prthmmkhija1/Pseudo-Proxima.git
-cd Pseudo-Proxima
+git clone https://github.com/AJS-911/Proxima.git
+cd Proxima
 
 # Run the Windows installation script (auto-detects VS version)
 .\scripts\install-windows.ps1
@@ -250,8 +252,8 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ```bash
 # Development setup
-git clone https://github.com/prthmmkhija1/Pseudo-Proxima.git
-cd Pseudo-Proxima
+git clone https://github.com/AJS-911/Proxima.git
+cd Proxima
 pip install -e ".[all]"
 
 # Run tests
@@ -281,5 +283,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 </p>
 
 <p align="center">
-  <a href="https://github.com/prthmmkhija1/Pseudo-Proxima/stargazers">⭐ Star us on GitHub</a>
+  <a href="https://github.com/AJS-911/Proxima/stargazers">⭐ Star us on GitHub</a>
 </p>

@@ -261,8 +261,8 @@ Visit http://localhost:8000
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/proxima-project/proxima/discussions)
-- Check existing [Issues](https://github.com/proxima-project/proxima/issues)
+- Open a [GitHub Discussion](https://github.com/AJS-911/Proxima/discussions)
+- Check existing [Issues](https://github.com/AJS-911/Proxima/issues)
 - Read the [Documentation](https://proxima.readthedocs.io)
 
 Thank you for contributing! 🎉

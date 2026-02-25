@@ -50,8 +50,8 @@ pip install proxima-agent[dev]
 
 ```bash
 # Clone the repository
-git clone https://github.com/prthmmkhija1/Pseudo-Proxima.git
-cd Pseudo-Proxima
+git clone https://github.com/AJS-911/Proxima.git
+cd Proxima
 
 # Create virtual environment (recommended)
 python -m venv venv
@@ -84,8 +84,8 @@ docker run -it \
 
 ```bash
 # Clone the repository
-git clone https://github.com/prthmmkhija1/Pseudo-Proxima.git
-cd Pseudo-Proxima
+git clone https://github.com/AJS-911/Proxima.git
+cd Proxima
 
 # Start with docker-compose
 docker-compose up -d
@@ -98,7 +98,7 @@ docker-compose exec proxima proxima --help
 
 ```bash
 # Add the tap (when available)
-brew tap prthmmkhija1/proxima
+# brew tap ajs-911/proxima  # (coming soon)
 
 # Install
 brew install proxima
@@ -196,5 +196,5 @@ pip install cirq  # or qiskit-aer
 ### Getting Help
 
 - **Documentation**: [https://proxima-agent.readthedocs.io](https://proxima-agent.readthedocs.io)
-- **Issues**: [GitHub Issues](https://github.com/prthmmkhija1/Pseudo-Proxima/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/prthmmkhija1/Pseudo-Proxima/discussions)
+- **Issues**: [GitHub Issues](https://github.com/AJS-911/Proxima/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/AJS-911/Proxima/discussions)

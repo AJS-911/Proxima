@@ -78,8 +78,8 @@ Proxima supports multiple quantum simulation backends:
 ## Getting More Help
 
 - Documentation: https://proxima.dev/docs
-- GitHub: https://github.com/prthmmkhija1/Pseudo-Proxima
-- Report Issues: https://github.com/prthmmkhija1/Pseudo-Proxima/issues
+- GitHub: https://github.com/AJS-911/Proxima
+- Report Issues: https://github.com/AJS-911/Proxima/issues
 """
 
 

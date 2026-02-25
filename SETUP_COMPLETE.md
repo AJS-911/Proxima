@@ -195,10 +195,10 @@ pip install -e ".[dev]"
 
 ## Important Paths
 
-- **Source Code**: `d:\AGENT\Pseudo-Proxima\src\proxima\`
-- **Tests**: `d:\AGENT\Pseudo-Proxima\tests\`
-- **Configuration**: `d:\AGENT\Pseudo-Proxima\configs\`
-- **Documentation**: `d:\AGENT\Pseudo-Proxima\docs\`
+- **Source Code**: `src/proxima/`
+- **Tests**: `tests/`
+- **Configuration**: `configs/`
+- **Documentation**: `docs/`
 
 ---
 

@@ -87,9 +87,9 @@ OR
 
 ### Step 2: Navigate to Proxima Directory
 
-Type this command (copy and paste it):
+Type this command (copy and paste it — replace `C:\Proxima` with wherever you cloned the project):
 ```powershell
-cd C:\Users\dell\Pictures\intern\ProximA\Pseudo-Proxima
+cd C:\Proxima
 ```
 
 Press `Enter`.
@@ -112,7 +112,7 @@ This creates a folder called `venv` in your directory.
 
 ✅ **Success!** You should see `(venv)` at the start of your command line:
 ```
-(venv) PS C:\Users\dell\Pictures\intern\ProximA\Pseudo-Proxima>
+(venv) PS C:\Proxima>
 ```
 
 ### Step 5: Install Proxima
@@ -537,7 +537,7 @@ proxima session resume <session-id>
 
 **Solution**:
 ```powershell
-cd C:\Users\dell\Pictures\intern\ProximA\Pseudo-Proxima
+cd C:\Proxima
 .\venv\Scripts\activate
 pip install -e .[all]
 ```
@@ -548,7 +548,7 @@ pip install -e .[all]
 
 **Solution**:
 ```powershell
-cd C:\Users\dell\Pictures\intern\ProximA\Pseudo-Proxima
+cd C:\Proxima
 .\venv\Scripts\activate
 ```
 
@@ -926,9 +926,9 @@ You've learned:
 **Next**: Try running your first simulation!
 
 ```powershell
-cd C:\Users\dell\Pictures\intern\ProximA\Pseudo-Proxima
+cd C:\Proxima
 .\venv\Scripts\activate
-proxima bell
+proxima run "bell state"
 ```
 
 **Happy Simulating! 🚀✨**
