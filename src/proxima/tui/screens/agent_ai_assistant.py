@@ -2413,6 +2413,9 @@ class AgentAIAssistantScreen(BaseScreen):
             text = Text()
             text.append("\n❌ Error: ", style=f"bold {theme.error}")
             text.append(error, style=theme.fg_muted, overflow="fold")
+            chat_log.write(text)
+        except Exception:
+            pass
 
     def _update_todo_pill(self, result: "ToolResult") -> None:
         """Update the TodoPillWidget from a ``todos`` tool execution result.
@@ -2461,15 +2464,6 @@ class AgentAIAssistantScreen(BaseScreen):
             for t in todos
         )
         pill.update_counts(completed, total, in_progress=in_progress)
-            text.append("\n", style=theme.fg_base)
-            
-            chat_log.write(text)
-            
-            # Update error stats
-            self._agent_stats.errors += 1
-            self._update_stats_panel()
-        except Exception:
-            pass
 
     # ── Phase 15: Slash commands & session management ─────────────────
 
