@@ -3151,6 +3151,8 @@ Phase 14 (Core Integration)               ← Wiring all components together
 Phase 15 (Session Context Handling)         ← Core functionality 10 — persistence, import, auto-summarization
     ↓
 Phase 16 (Crush-Inspired Capabilities)      ← Core functionality 11 — sub-agents, permissions, todos, dual-model
+    ↓
+Phase 17 (Multi-Step Parsing & Dispatch)    ← Core functionality 12 — numbered-list splitting, cross-step context, branch validation
 ```
 
 **Parallel opportunities:**
@@ -3170,7 +3172,429 @@ Phase 16 (Crush-Inspired Capabilities)      ← Core functionality 11 — sub-ag
 - Phase 10 must come after Phases 3-9 (integrates all components)
 - Phase 14 must complete before Phase 15 (core wiring must be stable before session persistence layer)
 - Phase 15 must substantially complete before Phase 16 (AgentSessionManager needed for sub-agent TaskSessions, dual-model routing)
-- Phase 16 is the final phase — strict compliance validation (functionality 12) should be verified across all 16 phases at the end
+- Phase 16 is the final integration phase — strict compliance validation (functionality 12) should be verified across all 16 phases at the end
+- Phase 17 can start any time after Phase 10 (requires AgentLoop for dispatch) and Phase 1 (requires IntentType enum); Steps 17.6, 17.7, 17.9, 17.10 are fully independent and can begin immediately
+
+---
+
+## Phase 17: Robust Multi-Step Instruction Parsing, Sequential Dispatch, and Cross-Step Context Propagation
+
+### Problem Statement
+
+When a user sends a complex, multi-step request — whether as a numbered list, a paragraph with sequential instructions, or a mix of both — the agent frequently misinterprets the structure. Specifically:
+
+**Observed bug (screenshots):** A user asked:
+> *"I want to use the updated LRET cirq-scalability-comparison backend. Please:*
+> *1. Clone repo https://github.com/kunal5556/LRET at "C:\Users\dell\Pictures\Screenshots"*
+> *2. switch to cirq-scalability-comparison branch*
+> *3. Install all dependencies*
+> *4. compile the backend*
+> *5. Test it*
+> *6. Configure proxima to use it"*
+
+The agent responded: **"Branch '3.' not found locally or remotely. Error: fatal: invalid reference: origin/3."** — proving that the agent collapsed all six steps into a single operation, treated the unsplit trailing text as a git reference, and passed `3.` to `git checkout`.
+
+**Root causes** (three compounding failures):
+
+1. **The numbered-list split regex in `_parse_multi_step_intent()` (in `src/proxima/agent/dynamic_tools/robust_nl_processor.py`, around line 2088) uses `(?:^|\n)\s*\d+[\.):]\s+` — which requires a newline `\n` or start-of-string `^` before each number.** When the user's TUI input delivers the message as a single string where newlines are preserved from the input widget, OR when the message arrives as a single line (common with some TUI widget configurations), the regex only matches `1.` at position 0. Items 2–6 are never separated. `re.split()` produces two parts: the empty preamble and the entire remainder as one chunk.
+
+2. **The single unsplit chunk then enters priority classification (lines ~2117–2270 of `_parse_multi_step_intent`), where the first matching pattern wins.** Since the chunk contains a URL, it classifies as `GIT_CLONE`. The words `"switch to"`, `"install"`, `"compile"`, `"test"`, and `"configure"` inside the same chunk are silently ignored.
+
+3. **When the `GIT_CLONE` sub-intent is executed (or when the medium-confidence path delegates to the agentic LLM loop), the LLM or the entity extractor sees the garbled unsplit text — including `3. Install` — and can misinterpret the `3.` fragment as a branch reference, a positional argument, or pass it directly to a git command**, producing the fatal `git checkout 3.` error.
+
+### Phase Objective
+
+Make the agent correctly decompose **any** multi-step user instruction into individual actionable steps, execute them in dependency order with context propagation between steps, and handle failures gracefully — so that a request like the one above results in six correctly-sequenced operations (clone → checkout → install → build → test → configure), not one garbled operation.
+
+---
+
+### Step 17.1 — Fix the Numbered-List Splitting Regex
+
+**File:** `src/proxima/agent/dynamic_tools/robust_nl_processor.py`
+**Method:** `_parse_multi_step_intent` (around line 2077)
+
+**Current behaviour:** The split regex `(?:^|\n)\s*\d+[\.):]\s+` only fires on `^` (start-of-string in non-MULTILINE mode) or literal `\n`. It fails for inline numbered items like `"... 2. switch to ..."` where the `2.` is preceded by a space, not a newline.
+
+**Required change:**
+
+Replace the single regex-based split with a two-phase approach:
+
+1. **Phase A — Normalization.** Before splitting, normalize the input so that numbered items always appear on their own lines. Insert a `\n` before every occurrence of `\s+\d+[\.):]\s+` that is NOT at the start of the string. This means: detect the pattern `(whitespace)(digit)(period/paren/colon)(whitespace)` mid-sentence and inject a newline. Use a `re.sub()` call such as: replace `r'(?<=\S)\s+(\d+[\.):]\s+)'` with `r'\n\1'`. This safely converts single-line numbered lists into multi-line form without altering already-multiline input.
+
+2. **Phase B — Splitting.** After normalization, apply the existing split regex `r'(?:^|\n)\s*\d+[\.):]\s+'` **with `re.MULTILINE`** so that `^` now matches the start of each line (not just the start of the string). This ensures every numbered item is found and separated.
+
+**Validation after this step:** Given the input `"Please: 1. Clone X 2. Switch to Y branch 3. Install deps 4. Build 5. Test 6. Configure"`, the split must produce exactly six parts: `["Clone X", "Switch to Y branch", "Install deps", "Build", "Test", "Configure"]`. The preamble `"Please:"` must be discarded. Use a **keyword-based preamble filter** (not a length threshold alone, since preambles like `"Please:"` are 7 characters and would survive a naive length check). After splitting, discard any part that does NOT contain at least one actionable keyword from the intent keyword dictionary (e.g., `clone`, `switch`, `install`, `build`, `test`, `configure`, `run`, `create`, `delete`, `push`, `pull`, `navigate`, etc.). Parts that are pure conversational filler — such as `"Please:"`, `"Here is what I need:"`, `"I want to:"` — contain zero actionable keywords and are safely discarded. As a secondary guard, also discard parts shorter than 3 characters (to catch empty remnants).
+
+**Edge cases to handle:**
+- Input already has proper newlines between numbered items → normalization is a no-op, split works as before.
+- Mixed format: some items have newlines, some don't → normalization adds missing newlines, split finds all items.
+- Non-numbered multi-step (e.g., `"clone X then install Y then build"`) → this path is not affected; the existing separator-based split (`then`, `after that`, etc.) handles it separately.
+- Numbered items with sub-numbers (e.g., `"2a. ..."`) → the regex `\d+[\.):]\s+` does not match `2a.`, so these are treated as part of the parent item. This is acceptable behaviour.
+- Bullet lists (`- item`, `* item`) → not handled by this regex. Add a secondary detection: if the message contains `r'(?:^|\n)\s*[-*]\s+'` (3 or more occurrences), split on those as well. This is a low-priority enhancement.
+
+---
+
+### Step 17.2 — Harden the Multi-Step Detection Trigger
+
+**File:** `src/proxima/agent/dynamic_tools/robust_nl_processor.py`
+**Method:** `_layer2_multi_step` (around line 1620)
+
+**Current behaviour:** The `has_numbered_list` check uses the same flawed `(?:^|\n)` pattern for detection. Even though detection currently succeeds (because `1.` at the start matches `^`), the logic is fragile and should be aligned with the improved split.
+
+**Required change:**
+
+Replace the detection regex with a **count-based heuristic**. Instead of a boolean yes/no for `has_numbered_list`, count how many numbered items appear using: `re.findall(r'(?:(?:^|\s)\s*)(\d+)[\.):]\s+', message)` (note: `(?:^|\s)` suffices because `\s` already includes `\n`). If the count is ≥ 2, then it is definitively a numbered list. If the count is 1, it might be a single instruction with a leading number (e.g., `"1 qubit bell state"`) — in that case, do NOT treat it as a numbered list; let it fall through to Layer 3 (keyword scoring).
+
+**Also fix the character-class inconsistency:** The current detection regex in `_layer2_multi_step` uses `[\.\)]` (only `.` and `)`) while the split regex in `_parse_multi_step_intent` uses `[\.):]+` (includes `:`). Align both to `[\.):]+` so that colon-style numbering (e.g., `1: Clone`, `2: Build`) is detected AND split correctly. Also update the Layer 1 multi-step guard in `_layer1_pattern_match` (line 1555) to use the same aligned character class.
+
+Additionally, add a **structural completeness check**: after detecting numbered items, verify that the extracted numbers form a plausible sequence. For instance, `[1, 2, 3, 4, 5, 6]` is valid; `[3, 7, 11]` is likely not a numbered task list but rather numeric references within text. Use: numbers must start at 1 (or at least include 1), and consecutive gaps must be ≤ 2. If the sequence fails this check, do not treat the message as a numbered list.
+
+---
+
+### Step 17.3 — Improve Per-Part Intent Classification with Disambiguation
+
+**File:** `src/proxima/agent/dynamic_tools/robust_nl_processor.py`
+**Method:** `_parse_multi_step_intent` — the priority-based classifier block (around lines 2125–2290)
+
+**Current behaviour:** Each extracted part goes through a priority cascade (clone → checkout → navigate → script → install → build → …). This works correctly **if the split is correct** (i.e., each part contains only one instruction). However, if any part still contains leftover text from an adjacent step (due to imperfect splitting), the first-match-wins rule causes silent data loss.
+
+**Required changes:**
+
+1. **Add a secondary entity-extraction pass per part.** After classifying each part's intent, run `extract_entities()` on just that part's text. Verify that the extracted entities are consistent with the classified intent. For example:
+   - If the intent is `GIT_CHECKOUT` but no branch entity was extracted → flag as suspect. Look for branch-like strings in the part text using a relaxed pattern `r'[a-zA-Z][a-zA-Z0-9_\-]+(?:/[a-zA-Z0-9_\-]+)*'`. If still none found, reclassify as `UNKNOWN` and let the agentic loop handle it.
+   - If the intent is `GIT_CLONE` but no URL entity was extracted → check if a URL was extracted in a previous part's entities. If yes, this part may be a continuation, not a clone — reclassify.
+
+2. **Add cross-part duplicate detection.** If two consecutive parts are classified as the same intent (e.g., both `GIT_CLONE`), the second one is likely misclassified. Apply the disambiguation rules from `_DISAMBIGUATION_RULES` to the second part.
+
+3. **Add a "catch-all" classification for vague parts.** Parts like `"Test it"` or `"Configure proxima to use it"` may not match any specific keyword pattern. Rather than dropping these, classify them as:
+   - `"Test it"` → `BACKEND_TEST` (if prior context includes a backend build) or `RUN_COMMAND` (with command `"pytest"` or test script detection).
+   - `"Configure proxima to use it"` → `BACKEND_CONFIGURE` (if prior context includes a backend) or `CONFIGURE_ENVIRONMENT`.
+   Use the session context (previous parts in the same multi-step request) to resolve `"it"` to the concrete entity from a prior step.
+
+---
+
+### Step 17.4 — Add Pronoun and Anaphora Resolution Across Steps
+
+**File:** `src/proxima/agent/dynamic_tools/robust_nl_processor.py`
+**Method:** `_resolve_entity_references` (used inside `_parse_multi_step_intent` at the per-part level)
+
+**Current behaviour:** `_resolve_entity_references` exists and resolves pronouns like `"it"`, `"them"`, `"that"` within a single part. However, it only looks at `self._session_context` (the long-term session), not at the entities extracted from **prior parts within the same multi-step request**.
+
+**Required change:**
+
+Modify `_parse_multi_step_intent` to maintain a **local entity accumulator** — a list of `ExtractedEntity` objects collected from all prior parts in the current request. Pass this accumulator into `_resolve_entity_references` as an additional parameter (e.g., `prior_entities: Optional[List[ExtractedEntity]] = None`). The parameter **must** have a default of `None` for backward compatibility, since `_resolve_entity_references` is called from 7 other locations in the file (lines ~1093, ~1114, ~1490, ~1567, ~1580, ~1593, and ~2119) that do not pass prior entities. When `prior_entities is None`, the method falls back to its current behaviour (SessionContext-only resolution).
+
+The resolution logic should:
+1. When a part contains `"it"`, `"this"`, `"the repo"`, `"the backend"`, or `"the project"` without a concrete entity:
+   - Look backward in `prior_entities` for the most recent entity of a compatible type.
+   - For `"it"` after a `GIT_CLONE` step → resolve to the cloned repository path.
+   - For `"it"` after a `GIT_CHECKOUT` step → resolve to the branch name.
+   - For `"it"` or `"the backend"` after a `BACKEND_BUILD` step → resolve to the backend name.
+2. When a part like `"Install all dependencies"` has no explicit target:
+   - Inject the working directory from the most recent clone or navigation step.
+   - Set the `cwd` entity for this part's intent to that directory.
+3. When a part like `"Test it"` has no explicit test target:
+   - If a prior step was `BACKEND_BUILD` with a backend name `X`, set the test target to `X`.
+   - If a prior step was `GIT_CLONE` to directory `D`, set the test cwd to `D`.
+
+**Data flow:** The entity accumulator is local to the `_parse_multi_step_intent` call and is discarded after the multi-step Intent is fully constructed. It does NOT pollute the long-term `_session_context`.
+
+---
+
+### Step 17.5 — Enhance AgentLoop Multi-Step Dispatch with Context Propagation
+
+**File:** `src/proxima/agent/dynamic_tools/agent_loop.py`
+**Method:** `_dispatch_multi_step` (around line 443) and `_propagate_context_into_sub_intent` (around line 647)
+
+**Current behaviour:** `_dispatch_multi_step` iterates over sub-intents sequentially, calls `_propagate_context_into_sub_intent` between steps to pass the cloned repository path, working directory, and script output. This context propagation logic already exists (Phase 10), but has several gaps:
+
+1. **Branch propagation:** After a `GIT_CLONE` step that specifies a branch, the branch name is not injected into the context for subsequent steps. If the next step is `GIT_CHECKOUT`, it re-extracts the branch from the original text — which may fail if the text was poorly split.
+2. **Dependency chain:** After an `INSTALL_DEPENDENCY` step, the installed packages are not recorded in the propagation context. If a subsequent `BACKEND_BUILD` step expects certain packages to be available, it has no way to verify this without re-scanning.
+3. **Failure messaging:** When a step fails, the error message is generic (`"Step N failed"`). It does not include the specific error output, making it hard for the user (or the LLM in the agentic loop) to diagnose the problem.
+
+**Required changes:**
+
+1. **Add a `StepContext` dataclass** (new, defined at the top of `agent_loop.py` or in a shared types module):
+   - `cloned_repo_path: Optional[str]` — set after `GIT_CLONE` succeeds.
+   - `current_branch: Optional[str]` — set after `GIT_CLONE` with branch or `GIT_CHECKOUT` succeeds.
+   - `working_directory: str` — updated after every step that changes directory (clone, cd, navigate).
+   - `installed_packages: List[str]` — appended after `INSTALL_DEPENDENCY` succeeds.
+   - `backend_name: Optional[str]` — set after `BACKEND_BUILD` or `BACKEND_CONFIGURE` succeeds.
+   - `last_command_output: Optional[str]` — the stdout/stderr of the most recent terminal command. Useful for `ANALYZE_RESULTS` or error diagnosis.
+   - `last_step_success: bool` — whether the previous step succeeded.
+   - `environment_vars: Dict[str, str]` — any exported variables from prior steps.
+
+2. **Update `_propagate_context_into_sub_intent`** to read from and write to `StepContext` instead of using ad-hoc checks. After each step completes:
+   - If the step's intent was `GIT_CLONE`, extract the clone destination path from the tool result and set `StepContext.cloned_repo_path` and `StepContext.working_directory`.
+   - If the step's intent was `GIT_CHECKOUT`, extract the branch name and set `StepContext.current_branch`.
+   - If the step's intent was `INSTALL_DEPENDENCY`, parse the pip/npm output and append package names to `StepContext.installed_packages`.
+   - If the step's intent was `BACKEND_BUILD`, extract the backend name from the intent entities and set `StepContext.backend_name`.
+   - Before each step begins, inject relevant `StepContext` fields into the sub-intent's entities. For example, if the next step is `BACKEND_BUILD` and `StepContext.working_directory` is set, ensure the build tool runs in that directory.
+
+3. **Enhance the existing user-facing plan summary.** The current `_dispatch_multi_step` already calls `_format_plan_for_display(plan_steps)` and `_plan_confirmation_callback` (around lines 467–479) to show the plan and ask for confirmation. The existing format is functional but sparse. Enhance it to include extracted entities alongside each step description — for example, showing the URL next to the clone step and the branch name next to the checkout step:
+   ```
+   📋 Execution Plan (6 steps):
+   1. Clone https://github.com/kunal5556/LRET → C:\Users\dell\Pictures\Screenshots
+   2. Switch to branch: cirq-scalability-comparison
+   3. Install dependencies
+   4. Compile the backend
+   5. Run tests
+   6. Configure Proxima to use the backend
+   
+   Proceed? [Y/n]
+   ```
+   This ensures the user can verify that entities were extracted correctly before execution begins. Re-use the existing `_plan_confirmation_callback` mechanism — do not add a duplicate confirmation path.
+
+4. **Enhance failure handling.** The current `_dispatch_multi_step` already has a `_try_auto_fix` call (around line 539) that attempts to recover from fixable failures, and a `break` on unrecoverable failures that skips remaining steps. Enhance this with:
+   - Include the last 20 lines of terminal output in the error message (currently the error text is truncated to 200 chars at line ~534; increase or supplement with raw output from `self._last_script_output`).
+   - Offer the user three choices: **retry** the failed step, **skip** it and continue, or **abort** the plan. Currently the code always aborts on unrecoverable failure (`break`). Add a callback (similar to `_plan_confirmation_callback`) to ask the user which option to take.
+   - If the agentic loop is active (LLM-assisted path), feed the error into the LLM with the prompt: `"Step N failed with error: <error>. The original plan was: <plan>. How should we proceed?"` This lets the LLM suggest a fix (e.g., installing a missing dependency) before retrying.
+
+---
+
+### Step 17.6 — Add Inline Numbered-List Normalization to the TUI Input Layer
+
+**File:** `src/proxima/tui/screens/agent_ai_assistant.py`
+**Method:** `_generate_response` (around line 2728) or the message reception point where user text is first received
+
+**Problem:** Some TUI input widgets strip newlines from multi-line paste, converting:
+```
+1. Clone repo
+2. Switch branch
+3. Install deps
+```
+into `"1. Clone repo 2. Switch branch 3. Install deps"` (single line). Even though Step 17.1 fixes the NL processor's split, the TUI layer should preserve or restore structural formatting before passing the message downstream.
+
+**Required change:**
+
+At the **earliest point** where the user's message text is received in `_generate_response` (or the method that feeds into it), add a normalization step:
+
+1. Detect if the message contains inline numbered items: `re.search(r'\S\s+\d+[\.):]\s+[A-Za-z]', message)`. This matches a pattern like `"...repo 2. Switch..."` — a non-space character, some whitespace, a number with punctuation, then a letter.
+2. If detected, normalize: `message = re.sub(r'(\S)\s+(\d+[\.):]\s+)', r'\1\n\2', message)`. This inserts `\n` before each numbered item that isn't already at a line start.
+3. Pass the normalized message to `_generate_response` and all downstream processors.
+
+This is a **defensive normalization** — it ensures the NL processor always sees clean multi-line input regardless of how the TUI widget delivers the text. It must NOT alter messages that don't contain numbered lists (the regex requires `\d+[\.):]\s+[A-Za-z]` — a number followed by a letter — to avoid false positives on decimal numbers like `"3.14"` or version strings like `"Python 3.11"`).
+
+> **Idempotency note:** Both this TUI-layer normalization (Step 17.6) and the NL-processor normalization in Step 17.1 may apply to the same message. This is safe because the normalization is **idempotent**: inserting `\n` before `2.` when a `\n` is already present just adds a blank line, which the split regex discards via `strip()`. Applying both is the intended defence-in-depth design.
+
+---
+
+### Step 17.7 — Enhance the LLM System Prompt for Multi-Step Awareness
+
+**File:** `src/proxima/agent/dynamic_tools/system_prompt_builder.py`
+**Class:** `SystemPromptBuilder`
+
+**Current behaviour:** The system prompt tells the LLM `"For multi-step tasks, describe all steps."` but does not instruct it on how to handle numbered lists, how to sequence tool calls with dependencies, or how to propagate context between steps.
+
+**Required change:**
+
+Add a dedicated section to the system prompt (appended as a paragraph in the `build()` method's output):
+
+The new section should instruct the LLM:
+
+1. **When the user provides a numbered list of tasks:** Treat each numbered item as a separate, sequential operation. Execute them in order, one at a time. Do not combine multiple items into a single tool call. Do not extract arguments from one item and apply them to a different item's operation.
+
+2. **Context propagation rules:** After completing step N, use the result of step N to inform step N+1. Specifically:
+   - After cloning a repository, `cd` into the cloned directory before performing any subsequent operations.
+   - After switching branches, confirm the branch switch succeeded before proceeding.
+   - After installing dependencies, verify the installation was successful (check exit code) before building.
+   - After building, verify the build succeeded before testing.
+
+3. **Pronoun resolution:** When a step says `"Test it"` or `"Configure it"`, resolve `"it"` to the most recently mentioned concrete entity (repository, backend, package, file).
+
+4. **Error behaviour:** If a step fails, report the failure with the specific error message and ask the user how to proceed. Do not silently skip failed steps or proceed with downstream steps that depend on the failed step.
+
+5. **Never interpret numbered list indices as arguments.** The numbers `1.`, `2.`, `3.` etc. are structural markers for the list, not values to be passed to commands. A step `"3. Install all dependencies"` means "the third step is to install all dependencies" — the `3.` is not a branch name, file name, or any other argument.
+
+---
+
+### Step 17.8 — Add a Dedicated Multi-Step Integration Test Suite
+
+**File:** `tests/test_multi_step_parsing.py` (new file)
+
+Create a comprehensive test suite that validates the entire multi-step pipeline from raw user input to executed plan. The tests must cover:
+
+**Test Group A — Splitting correctness:**
+
+1. `test_numbered_list_with_newlines` — Standard multi-line numbered list. Input: `"1. Clone X\n2. Switch to Y\n3. Install deps"`. Assert: 3 parts extracted.
+2. `test_numbered_list_single_line` — Single-line numbered list. Input: `"1. Clone X 2. Switch to Y 3. Install deps"`. Assert: 3 parts extracted (this is the primary regression test for the bug).
+3. `test_numbered_list_with_preamble` — Numbered list preceded by a preamble sentence. Input: `"Please do the following: 1. Clone X 2. Build Y"`. Assert: 2 parts extracted, preamble discarded.
+4. `test_parenthetical_numbers` — Parenthesis-style numbering. Input: `"1) Clone X 2) Build Y 3) Test"`. Assert: 3 parts.
+5. `test_mixed_separators` — Mix of numbered and "then" separators. Input: `"1. Clone X then 2. build Y"`. Assert: 2 parts (numbered split takes priority).
+6. `test_six_step_backend_workflow` — The exact input from the screenshot. Assert: 6 parts with correct intents: `GIT_CLONE`, `GIT_CHECKOUT`, `INSTALL_DEPENDENCY`, `BACKEND_BUILD`, `BACKEND_TEST`, `BACKEND_CONFIGURE`.
+7. `test_single_numbered_item_not_treated_as_list` — Input: `"1 qubit bell state"`. Assert: NOT treated as a numbered list; classified as a single intent.
+8. `test_non_sequential_numbers_not_treated_as_list` — Input: `"use 3.14 as the phase angle and 7 qubits"`. Assert: NOT treated as a numbered list.
+
+**Test Group B — Intent classification per part:**
+
+9. `test_clone_part_classified_correctly` — Part: `"Clone repo https://github.com/user/repo at C:\\path"`. Assert: intent is `GIT_CLONE`, entities include URL and path.
+10. `test_branch_switch_part_classified_correctly` — Part: `"switch to cirq-scalability-comparison branch"`. Assert: intent is `GIT_CHECKOUT`, branch entity is `"cirq-scalability-comparison"`.
+11. `test_install_part_classified_correctly` — Part: `"Install all dependencies"`. Assert: intent is `INSTALL_DEPENDENCY`.
+12. `test_compile_part_classified_correctly` — Part: `"compile the backend"`. Assert: intent is `BACKEND_BUILD`.
+13. `test_test_part_classified_correctly` — Part: `"Test it"`. Assert: intent is `BACKEND_TEST` or `RUN_COMMAND` with test context.
+14. `test_configure_part_classified_correctly` — Part: `"Configure proxima to use it"`. Assert: intent is `BACKEND_CONFIGURE` or `CONFIGURE_ENVIRONMENT`.
+
+**Test Group C — Pronoun resolution:**
+
+15. `test_pronoun_resolution_after_clone` — After a `GIT_CLONE` step with URL `https://github.com/kunal5556/LRET`, a subsequent step `"Test it"` should resolve `"it"` to the LRET backend or the cloned directory.
+16. `test_pronoun_resolution_after_build` — After a `BACKEND_BUILD` step for `"lret_cirq_scalability"`, a subsequent step `"Configure proxima to use it"` should resolve `"it"` to `"lret_cirq_scalability"`.
+
+**Test Group D — Context propagation (integration):**
+
+17. `test_clone_sets_working_directory` — After a `GIT_CLONE` step, the `StepContext.working_directory` should be set to the clone destination.
+18. `test_checkout_follows_clone_directory` — A `GIT_CHECKOUT` step after `GIT_CLONE` should execute in the cloned directory, not the original cwd.
+19. `test_install_follows_clone_directory` — An `INSTALL_DEPENDENCY` step after `GIT_CLONE` should use the cloned directory as its cwd.
+
+**Test Group E — End-to-end regression:**
+
+20. `test_screenshot_scenario_end_to_end` — The full message from the screenshots. Mock the terminal commands. Assert: the agent produces 6 sequential tool calls in the correct order, each with correct arguments, and no step receives `"3."` as a branch name.
+
+---
+
+### Step 17.9 — Harden Branch Entity Extraction Against Numbered-List Artifacts
+
+**File:** `src/proxima/agent/dynamic_tools/robust_nl_processor.py`
+**Method:** `extract_entities` — branch extraction block (around line 1257)
+
+**Current behaviour:** The branch pattern validation already rejects pure-numeric strings like `"3."` (via `branch[0].isalpha()` and `re.match(r'^\d+[\.]?$', branch)`). However, there is no protection against fragments like `"3.Install"` (no space after the period), `"origin/3."`, or `"3"` appearing in a garbled context.
+
+**Required changes:**
+
+1. **Add a pre-filter to the branch validation block:** Before checking any branch regex match, verify that the candidate branch string:
+   - Does not match `r'^\d+[\.):,;]?$'` (a bare number with optional punctuation).
+   - Does not match `r'^\d+\.[A-Z]'` (a number-period immediately followed by an uppercase letter — like `"3.Install"` from an unsplit numbered item).
+   - Does not contain only digits and dots: `r'^[\d\.]+$'`.
+   - Is not a known step-numbering artifact: if the candidate starts with a digit followed by `.`, `)`, or `:`, and the rest is a common English word (in a small stopword list: `["install", "clone", "build", "test", "run", "configure", "switch", "compile", "deploy", "push", "pull", "checkout", "create", "delete", "update", "setup"]`), reject it.
+
+2. **Add a global pre-processing step at the top of `extract_entities`.** Before running any entity extraction patterns, strip numbered-list prefixes from the input text using: `cleaned = re.sub(r'(?:^|\n)\s*\d+[\.):]\s+', '\n', message)`. Run entity extraction on the `cleaned` text. This ensures that numbered-list markers never accidentally become part of an extracted entity value. **Important:** The stripping must preserve the relative positions of the remaining text so that entity offsets are still meaningful. If offset tracking is needed, maintain a position mapping; otherwise, just strip and extract (offsets in the current implementation are used for scoring, not for text slicing, so the small shift is acceptable).
+
+---
+
+### Step 17.10 — Add Branch Validation to GitBranchTool Before Execution
+
+**File:** `src/proxima/agent/dynamic_tools/tools/git_tools.py`
+**Class:** `GitBranchTool` — the `_execute` method (specifically the `action="switch"` path)
+
+**Current behaviour:** When `action="switch"` is invoked, the tool runs `git checkout <branch>` or `git switch <branch>`. It trusts the caller to provide a valid branch name. If the branch does not exist, git returns `fatal: invalid reference`, which the tool reports as an error. But the error is confusing because the user never asked for that branch.
+
+**Required changes:**
+
+1. **Add a pre-execution branch name validation step.** Before running `git checkout <branch>`:
+   - Check that the branch name does not match `r'^\d+[\.):,;]?$'` (bare numbered-list artifact). If it does, return an error immediately: `"Invalid branch name '{branch}'. This looks like a numbered-list marker, not a branch name. Please specify the branch explicitly."`
+   - Check that the branch name does not match `r'^\d+\.[A-Z]'` (numbered-list fragment like `"3.Install"` from an unsplit list item).
+   - Check that the branch name is not purely digits and dots: `r'^[\d\.]+$'`.
+   - **Do NOT use a general `^[a-zA-Z_]` start-of-name requirement** — legitimate git branches can start with digits (e.g., `3.x-stable`, `2.0-release`, `4.0.0`). The validation must only reject clear artifacts, not valid branch naming conventions.
+
+2. **Add a `--list` pre-check.** Before attempting to switch, run `git branch --list <branch>` and `git branch -r --list origin/<branch>` to verify the branch exists (locally or remotely). If it does not exist:
+   - Run `git branch -a` to get all available branches.
+   - Use fuzzy matching (Levenshtein distance or simple substring matching) to suggest the closest branch name.
+   - Return: `"Branch '<branch>' not found. Did you mean: <suggestion>? Available branches: <list>"`
+
+3. **Add a `git fetch` fallback.** If the branch is not found locally but the user's request mentioned it explicitly (high-confidence entity), run `git fetch --all` once, then retry the branch lookup. Remote-only branches that haven't been fetched yet are a common source of "branch not found" errors.
+
+---
+
+### Step 17.11 — Add the "Backend Workflow" Composite Intent
+
+**File:** `src/proxima/agent/dynamic_tools/robust_nl_processor.py`
+**Location:** Inside the `_layer1_pattern_match` method (around line 1537)
+
+**Problem:** The six-step workflow (clone → checkout → install → build → test → configure) is an extremely common pattern for backend integration. Currently, the agent must decompose it from a numbered list every time. Adding a dedicated composite detection path allows the agent to recognize this pattern at Layer 1 (fast, no LLM needed) and generate all six sub-intents directly.
+
+**Required changes:**
+
+1. **Do NOT add `BACKEND_WORKFLOW` to the `IntentType` enum.** The returned intent will use `IntentType.MULTI_STEP` with pre-built `sub_intents`, not a new enum value. Adding an enum member that is never used as an intent type would create dead code and confusion. Instead, create this as a detection helper method only.
+
+2. **Add the detection as a special case BEFORE the multi-step guard** in `_layer1_pattern_match`. The current guard at line 1555 returns `None` for any message containing numbered-list patterns, which would prevent this detection from firing. Place the backend-workflow detection **above** line 1555 (before the `if re.search(r'(?:^|\n)\s*\d+[\.\)]\s+', message): return None` guard). This ensures the composite pattern is checked first; if it matches, Layer 1 returns a fully-formed `MULTI_STEP` intent directly without needing Layer 2.
+
+   The pattern should match messages that contain **all of the following** (in any order):
+   - A GitHub URL or the word `"clone"`
+   - A branch name or the word `"branch"`
+   - The word `"install"` or `"dependencies"`
+   - The word `"build"` or `"compile"`
+   - The word `"test"` or `"verify"`
+   - The word `"configure"` or `"use it"` or `"integrate"`
+
+   If ≥ 4 of these 6 indicators are present, classify as a backend workflow.
+
+3. **When the backend workflow is detected,** call a new method `_build_backend_workflow_intent(message)` that:
+   - Extracts the URL, branch, and destination path from the message.
+   - Creates 6 ordered sub-intents: `GIT_CLONE`, `GIT_CHECKOUT`, `INSTALL_DEPENDENCY`, `BACKEND_BUILD`, `BACKEND_TEST`, `BACKEND_CONFIGURE`.
+   - Populates each sub-intent's entities from the extracted values.
+   - Resolves cross-step references (e.g., the build step's backend name comes from the URL's repo name; the test step's target comes from the build step's backend name).
+   - Returns an `Intent` with `intent_type=IntentType.MULTI_STEP` and `sub_intents` set to the 6 sub-intents.
+
+**Why this matters:** This guarantees that the most common multi-step workflow is handled perfectly at Pattern Match speed, even if the numbered-list splitting has edge-case failures. It is a **defense-in-depth** approach.
+
+---
+
+### Step 17.12 — Validation Checklist
+
+After implementing Steps 17.1 through 17.11, verify the following end-to-end scenarios work correctly in the TUI:
+
+**Scenario 1 (Primary — the screenshot bug):**
+User types:
+> I want to use the updated LRET cirq-scalability-comparison backend. Please:
+> 1. Clone repo https://github.com/kunal5556/LRET at "C:\Users\dell\Pictures\Screenshots"
+> 2. switch to cirq-scalability-comparison branch
+> 3. Install all dependencies
+> 4. compile the backend
+> 5. Test it
+> 6. Configure proxima to use it
+
+Expected: The agent displays a 6-step plan, asks for confirmation, then executes each step in order. No step receives `"3."` as a branch name. The branch `cirq-scalability-comparison` is correctly extracted and passed to the checkout step. Each subsequent step runs in the cloned directory.
+
+**Scenario 2 (Single-line variant):**
+User types the same request but as a single line (no newlines between items):
+> Please: 1. Clone repo https://github.com/kunal5556/LRET at C:\Screenshots 2. switch to cirq-scalability-comparison branch 3. Install all dependencies 4. compile the backend 5. Test it 6. Configure proxima to use it
+
+Expected: Identical behaviour to Scenario 1.
+
+**Scenario 3 (Natural language, no numbers):**
+User types:
+> Clone the LRET repo from https://github.com/kunal5556/LRET, then switch to the cirq-scalability-comparison branch, install the dependencies, build it, test it, and configure proxima to use it.
+
+Expected: Detected as multi-step via `"then"` and `","` + `"and"` separators. Same 6-step plan generated and executed.
+
+**Scenario 4 (Partial workflow):**
+User types:
+> 1. Clone https://github.com/kunal5556/LRET
+> 2. Switch to cirq-scalability-comparison branch
+
+Expected: 2-step plan. No attempt to install, build, test, or configure.
+
+**Scenario 5 (Ambiguous single step):**
+User types:
+> Test the cirq backend
+
+Expected: Single-step intent (`BACKEND_TEST`), not a multi-step plan. The numbered-list detector must NOT trigger.
+
+**Scenario 6 (Non-list numbers):**
+User types:
+> Run a 3-qubit GHZ state simulation with 1000 shots
+
+Expected: Single-step intent (`RUN_COMMAND` or `SIMULATION_RUN`). The numbers `3` and `1000` must NOT trigger numbered-list detection.
+
+---
+
+### Phase 17 Dependency Map
+
+| Step | Depends On | Files Modified |
+|------|-----------|----------------|
+| 17.1 | None (standalone regex fix) | `robust_nl_processor.py` |
+| 17.2 | 17.1 (uses same regex) | `robust_nl_processor.py` |
+| 17.3 | 17.1 (requires correct split) | `robust_nl_processor.py` |
+| 17.4 | 17.3 (uses per-part classification) | `robust_nl_processor.py` |
+| 17.5 | 17.1 + Phase 10 (existing dispatch) | `agent_loop.py` |
+| 17.6 | None (standalone TUI fix) | `agent_ai_assistant.py` |
+| 17.7 | None (standalone prompt update) | `system_prompt_builder.py` |
+| 17.8 | 17.1–17.5 (validates all fixes) | `tests/test_multi_step_parsing.py` (new) |
+| 17.9 | None (standalone hardening) | `robust_nl_processor.py` |
+| 17.10 | None (standalone tool hardening) | `git_tools.py` |
+| 17.11 | 17.1–17.4 (composite intent uses NL infra) | `robust_nl_processor.py` |
+| 17.12 | All above (end-to-end validation) | None (manual testing) |
+
+**Parallelization:** Steps 17.1–17.4 (NL processor fixes) can be done as one batch. Steps 17.6, 17.7, 17.9, 17.10 are fully independent and can be done in parallel with each other and with 17.1–17.4. Step 17.5 (AgentLoop dispatch) should follow 17.1. Steps 17.8 and 17.11 should be done last. Step 17.12 is manual validation after everything else.
 
 ---
 
